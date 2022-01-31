@@ -1,0 +1,35 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta http-equiv="X-UA-Compatible" content="IE=edge">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Test ATS Events</title>
+    <script src="../dist/bundle.js"></script>
+    <style>
+
+    </style>
+</head>
+
+<body>
+    <form>
+        <input type="text" placeholder="type your name here">
+        <button type="submit">Send</button>
+    </form>
+    <a href="https://google.com">Click me!</a>
+    <p>Scroll down</p>
+    <div class="spacer"></div>
+    <p>End of page</p>
+</body>
+<script>
+    const atsEvents = new ATSEvents({ "api_key": "dsadas", "debug": true });
+    atsEvents.listen();
+
+    setTimeout(() => {
+        atsEvents.trigger("click");
+    }, 2000);
+
+</script>
+
+</html>
