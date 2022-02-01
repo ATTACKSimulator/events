@@ -1,5 +1,6 @@
 import { Manager } from "./src/Manager";
-import Remote from "./src/remote";
+import Remote from "./src/Remote";
+import {removeSubdomain} from "./src/Tools";
 
 interface Options {
 	apiKey?: string,
@@ -13,7 +14,7 @@ interface Options {
 const defaultOptions: Options = {
 	events: [],
 	debug: false,
-	redirectUrl: "https://attacksimulator.com",
+	redirectUrl: `https://oops.${removeSubdomain(window.location.hostname)}`,
 	source: "LP",
 	url: "https://api.attacksimulator.com/v0/client-events",
 };
