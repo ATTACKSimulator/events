@@ -164,7 +164,7 @@ export class Manager {
 			.catch(e => {if(this.debug) { console.error(e); }})
 			.finally(() => {
 				if (remoteEvent.redirectOnFinish) {
-					window.location.href = this.redirectUrl;
+					window.location.href = `${this.redirectUrl}${window.location.search}`;
 				}
 			});
 	}
