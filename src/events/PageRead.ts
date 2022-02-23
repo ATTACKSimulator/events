@@ -1,8 +1,8 @@
 import { IEvent } from "../Event";
 
 export class PageRead implements IEvent {
-	private minScrollPercentage = 0.1;
-	private minStaySeconds = 3*60*1000;
+	private minScrollPercentage = 75;
+	private minStaySeconds = 60*1000;
 	private hasScrolled = false;
 	private hasStayed = false;
 	private customEvent: Event;
@@ -22,7 +22,6 @@ export class PageRead implements IEvent {
 	}
 
 	private get visibilityProps() : [string, string] {
-		console.log("props");
 		if (typeof document.hidden !== "undefined") {
 			return ["visibilitychange", "visibilityState"];
 		}
@@ -49,7 +48,7 @@ export class PageRead implements IEvent {
 			const [visibilityChange] = this.visibilityProps;
 			document.addEventListener(visibilityChange, this.visibilityChanged.bind(this));
 		} catch(_) {
-			// 
+			//
 			return;
 		}
 	}
@@ -60,7 +59,7 @@ export class PageRead implements IEvent {
 			const [visibilityChange] = this.visibilityProps;
 			document.removeEventListener(visibilityChange, this.visibilityChanged.bind(this));
 		} catch(_) {
-			// 
+			//
 			return;
 		}
 	}
@@ -78,9 +77,9 @@ export class PageRead implements IEvent {
 		this.toggleTimer(false);
 	}
 
-	private toggleTimer(status: boolean) {		
+	private toggleTimer(status: boolean) {
 		if (this.hasStayed) { return; }
-	
+
 		if(status) {
 			this.timeout = setTimeout (() => this.stayed(), this.minStaySeconds);
 		} else {
@@ -96,14 +95,7 @@ export class PageRead implements IEvent {
 	}
 
 	private getScrollPercent() {
-		const h: HTMLElement = document.documentElement,
-			b: HTMLElement = document.body;
-
-		if (b.scrollHeight < h.scrollHeight) {
-			return 1;
-		}            
-
-		return (h.scrollTop || b.scrollTop) / ((h.scrollHeight || b.scrollHeight) - h.clientHeight) * 100;
+		return ((document.documentElement.scrollTop + document.body.scrollTop) / (document.documentElement.scrollHeight - document.documentElement.clientHeight) * 100);
 	}
 
 	private scrolled() {
@@ -137,7 +129,7 @@ export class PageRead implements IEvent {
 		return "page_read";
 	}
 	get hasTypes(): boolean {
-		return false;    
+		return false;
 	}
 	get targets(): (Window|Element)[] {
 		return [window];
