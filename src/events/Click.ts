@@ -8,10 +8,10 @@ export class Click implements IEvent {
 		return "click";
 	}
 	get name(): string {
-		return "click";
+		return "page_left";
 	}
 	get hasTypes(): boolean {
-		return true;    
+		return true;
 	}
 	get targets(): Element[] {
 		const elements = document.querySelectorAll("a:not([href$='.exe']),button:not([type=submit]),input[type=button]");
