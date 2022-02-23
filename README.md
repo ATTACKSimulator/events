@@ -35,19 +35,20 @@ Before running the plugin, make sure you get an api key from our support team.
 
 ```html
 <script>
-const ev = new ATSEvents({ "api_key": "YOUR_API_KEY"});
+const ev = new ATSEvents({ "apiKey": "YOUR_API_KEY"});
 ev.listen();
 </script>
 ```
 
 ## Options
 
-| Name | Type | Description |
-| --- | --- | -------- |
-| **events**| `string[]`| Set the events to watch. Leave empty to watch all available events. The default value is `[]`. |
-| **debug** | `boolean` | Set debugging `true` of `false`. The default value is `false`. |
+| Name            | Type | Description                                                                                                               |
+|-----------------| --- |---------------------------------------------------------------------------------------------------------------------------|
+| **apiKey**      | `string`| The key required to access our api. You can get it by contacting our support team.                                        |
+| **events**      | `string[]`| Set the events to watch. Leave empty to watch all available events. The default value is `[]`.                            |
+| **debug**       | `boolean` | Set debugging `true` of `false`. The default value is `false`.                                                            |
 | **redirectUrl** | `string` | Set the redirect url after affecting events have been triggered. The default value is `https://tips.attacksimulator.com`. |
-| **source** | `string` | Set the source of the events. Supported values are `LP` or `LP_EDU`. The default value is `LP`. |
+| **source**      | `string` | Set the source of the events. Supported values are `LP` or `LP_EDU`. The default value is `LP`.                           |
 
 ## Available events
 
