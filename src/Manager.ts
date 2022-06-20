@@ -22,27 +22,29 @@ export class Manager {
 	private readonly campaignInfo: CampaignInfo;
 	private readonly debug: boolean = false;
 	private readonly redirectUrl: string;
+	private readonly shouldRedirect: boolean;
 	private readonly remote: Remote;
 	private readonly source: string;
 	private readonly token: string;
-	
+
 	private handlers = [];
 	private disabledEvents = [];
 
 	remoteEvents: IEvent[];
 
-	constructor(remote: Remote, eventNames: string[], source: string, redirectUrl: string, debug = false) {
+	constructor(remote: Remote, eventNames: string[], source: string, redirectUrl: string, shouldRedirect: boolean, debug = false) {
 		this.remote = remote;
 		[this.token, this.campaignInfo] = findCampaignInfo();
 		this.browserInfo = findBrowserInfo();
-		
+
 		if (!eventNames.length) {
 			eventNames = Object.keys(this.supportedEvents);
 		}
-		
+
 		this.remoteEvents = eventNames.map(name => this.getEvent(name));
 		this.source = source;
 		this.redirectUrl = redirectUrl;
+		this.shouldRedirect = shouldRedirect;
 		this.debug = debug;
 
 		if (this.campaignInfo.download_type) {
@@ -60,12 +62,12 @@ export class Manager {
 	}
 
 	private getEvent(name: string) {
-		return new this.supportedEvents[name];
+		return new (this.supportedEvents[name]);
 	}
 
 	listen() {
 		let i = 0;
-		for(const remoteEvent of this.remoteEvents) {		
+		for(const remoteEvent of this.remoteEvents) {
 			if(this.debug) {
 				console.log(`Listening for event @${remoteEvent.trigger} (${remoteEvent.name})`);
 			}
@@ -79,7 +81,7 @@ export class Manager {
 
 	stop() {
 		let i = 0;
-		for(const remoteEvent of this.remoteEvents) {		
+		for(const remoteEvent of this.remoteEvents) {
 			if(this.debug) {
 				console.log(`Stopping listening for event @${remoteEvent.trigger} (${remoteEvent.name})`);
 			}
@@ -125,7 +127,7 @@ export class Manager {
 	}
 
 	trigger(eventName: string) {
-		const remoteEvent = this.supportedEvents[eventName];
+		const remoteEvent = this.getEvent(eventName);
 		if (!remoteEvent) {
 			throw new Error(`Unsupported event ${eventName}. Please choose one of ${Object.keys(this.supportedEvents).join(", ")}`);
 		}
@@ -136,7 +138,7 @@ export class Manager {
 		if (this.debug) {
 			console.log(`Event @${remoteEvent.trigger} (${remoteEvent.name}) triggered...`);
 		}
-		
+
 		if (event) {
 			event.preventDefault();
 			event.stopPropagation();
@@ -163,7 +165,7 @@ export class Manager {
 			})
 			.catch(e => {if(this.debug) { console.error(e); }})
 			.finally(() => {
-				if (remoteEvent.redirectOnFinish) {
+				if (remoteEvent.redirectOnFinish && this.shouldRedirect) {
 					window.location.href = `${this.redirectUrl}${window.location.search}`;
 				}
 			});
