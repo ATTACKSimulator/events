@@ -4,7 +4,7 @@ export default class Remote {
 	private api_key: string;
 	private url: string;
 	private debug: boolean;
-    
+
 	constructor(api_key: string, url: string, debug: boolean) {
 		this.api_key = api_key;
 		this.url = url;
@@ -21,11 +21,15 @@ export default class Remote {
 			xhr.open("POST", this.url, true);
 			xhr.setRequestHeader("Content-type", "application/json");
 			xhr.setRequestHeader("api-key", this.api_key);
-            
+
 			xhr.onreadystatechange = function () {
 				if (xhr.readyState === 4 && xhr.status === 200) {
-					const json = JSON.parse(xhr.responseText);
-					resolve(json);
+					if (xhr.responseText) {
+						const json = JSON.parse(xhr.responseText);
+						resolve(json);
+					} else {
+						resolve({});
+					}
 				}
 			};
 
@@ -36,4 +40,4 @@ export default class Remote {
 			xhr.send(JSON.stringify(data));
 		});
 	}
-} 
+}
