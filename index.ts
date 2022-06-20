@@ -7,6 +7,7 @@ interface Options {
 	debug?: boolean,
 	events?: string[]
 	redirectUrl: string,
+	shouldRedirect: boolean,
 	source: string,
 	url: string,
 }
@@ -14,6 +15,7 @@ interface Options {
 const defaultOptions: Options = {
 	events: [],
 	debug: false,
+	shouldRedirect: true,
 	redirectUrl: `https://oops.${removeSubdomain(window.location.hostname)}`,
 	source: "LP",
 	url: "https://api.attacksimulator.com/v0/client-events",
@@ -28,7 +30,7 @@ class ATSEvents {
 			console.log(_options);
 		}
 		const remote = new Remote(_options.apiKey, _options.url, _options.debug);
-		this.manager = new Manager(remote, _options.events, _options.source, _options.redirectUrl, _options.debug);
+		this.manager = new Manager(remote, _options.events, _options.source, _options.redirectUrl, _options.shouldRedirect, _options.debug);
 	}
 
 	listen() {
@@ -38,7 +40,7 @@ class ATSEvents {
 	stop() {
 		this.manager.stop();
 	}
-	
+
 	trigger(name: string) {
 		this.manager.trigger(name);
 	}

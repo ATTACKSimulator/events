@@ -15,22 +15,22 @@
 </head>
 
 <body>
-    <form>
-        <input type="text" placeholder="type your name here">
-        <button type="submit">Send</button>
-    </form>
-    <a href="https://google.com">Click me!</a>
-    <p>Scroll down</p>
-    <div class="spacer"></div>
-    <p>End of page</p>
+<form>
+    <input type="text" placeholder="type your name here">
+    <button type="submit">Send</button>
+</form>
+<a href="https://google.com">Click me!</a>
+<p>Scroll down</p>
+<div class="spacer"></div>
+<p>End of page</p>
 </body>
 <script>
-    const atsEvents = new ATSEvents({ "apiKey": "dsadas", "debug": true });
-    atsEvents.listen();
+	const atsEvents = new ATSEvents({ "apiKey": "q96LjB8iy2OYIzwh7AW6aSwrFqE5hre20000", "debug": true, "shouldRedirect": false, "url": "http://localhost:3000/v0/client-events", "events": ["page_loaded"] });
+	atsEvents.listen();
 
-    setTimeout(() => {
-        atsEvents.trigger("click");
-    }, 2000);
+	setTimeout(() => {
+		atsEvents.trigger("click");
+	}, 2000);
 
 </script>
 
