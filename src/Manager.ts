@@ -16,7 +16,7 @@ import { createUUID } from "./Tools";
 
 export class Manager {
 	private readonly supportedTypes : string[] = ["email", "password", "tel"];
-	private readonly supportedEvents = {"attachment_opened": AttachmentOpen, "click": Click, "download": Download, "file_open": FileOpen, "input": Input, "page_load": PageLoaded, "page_read": PageRead, "submit": Submit, };
+	private readonly supportedEvents = {"attachment_opened": AttachmentOpen, "click": Click, "download": Download, "file_open": FileOpen, "input": Input, "page_loaded": PageLoaded, "page_read": PageRead, "submit": Submit, };
 
 	private readonly browserInfo: BrowserInfo;
 	private readonly campaignInfo: CampaignInfo;
