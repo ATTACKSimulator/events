@@ -11,12 +11,15 @@ export class AttachmentOpen implements IEvent {
 		return "attachment_opened";
 	}
 	get hasTypes(): boolean {
-		return false;    
+		return false;
 	}
 	get targets(): Element[] {
 		return [];
 	}
 	checkEvent(): boolean {
+		return true;
+	}
+	get isBlocking(): boolean {
 		return true;
 	}
 }

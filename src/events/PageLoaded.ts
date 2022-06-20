@@ -11,12 +11,15 @@ export class PageLoaded implements IEvent {
 		return "page_loaded";
 	}
 	get hasTypes(): boolean {
-		return false;    
+		return false;
 	}
 	get targets(): (Element|Window)[] {
 		return [window];
 	}
 	checkEvent(): boolean {
 		return true;
+	}
+	get isBlocking(): boolean {
+		return false;
 	}
 }

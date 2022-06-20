@@ -11,7 +11,7 @@ export class Download implements IEvent {
 		return "download_file_event";
 	}
 	get hasTypes(): boolean {
-		return true;    
+		return true;
 	}
 	get targets(): Element[] {
 		const elements = document.querySelectorAll("a[href$='.exe']");
@@ -19,5 +19,8 @@ export class Download implements IEvent {
 	}
 	checkEvent(event: any): boolean {
 		return event.which && event.isTrusted && event.screenX && event.screenX != 0 && event.screenY && event.screenY != 0;
+	}
+	get isBlocking(): boolean {
+		return true;
 	}
 }

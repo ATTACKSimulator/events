@@ -137,4 +137,8 @@ export class PageRead implements IEvent {
 	checkEvent(): boolean {
 		return true;
 	}
+
+	get isBlocking(): boolean {
+		return false;
+	}
 }
