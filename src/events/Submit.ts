@@ -11,7 +11,7 @@ export class Submit implements IEvent {
 		return "form_submitted";
 	}
 	get hasTypes(): boolean {
-		return true;    
+		return true;
 	}
 	get targets(): Element[] {
 		const elements = document.querySelectorAll("form");
@@ -20,5 +20,8 @@ export class Submit implements IEvent {
 	checkEvent(event: Event): boolean {
 		const element = event.target as HTMLElement;
 		return element.className.indexOf("disabled") === -1;
+	}
+	get isBlocking(): boolean {
+		return true;
 	}
 }

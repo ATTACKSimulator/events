@@ -20,4 +20,7 @@ export class Click implements IEvent {
 	checkEvent(event: any): boolean {
 		return event.which && event.isTrusted && event.screenX && event.screenX != 0 && event.screenY && event.screenY != 0;
 	}
+	get isBlocking(): boolean {
+		return true;
+	}
 }

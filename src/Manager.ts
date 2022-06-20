@@ -139,7 +139,7 @@ export class Manager {
 			console.log(`Event @${remoteEvent.trigger} (${remoteEvent.name}) triggered...`);
 		}
 
-		if (event) {
+		if (event && remoteEvent.isBlocking) {
 			event.preventDefault();
 			event.stopPropagation();
 			event.stopImmediatePropagation();

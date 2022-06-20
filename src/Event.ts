@@ -25,6 +25,7 @@ export interface IEvent {
     get targets(): (Window|Element)[];
     get hasTypes(): boolean;
     get redirectOnFinish(): boolean;
+    get isBlocking(): boolean
     allowMultiple ?: boolean;
     checkEvent(event: Event): boolean;
 }
