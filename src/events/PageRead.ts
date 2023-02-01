@@ -1,7 +1,7 @@
 import { IEvent } from "../Event";
 
 export class PageRead implements IEvent {
-	private minScrollPercentage = 75;
+	private minScrollPercentage = 70;
 	private minStaySeconds = 30*1000;
 	private hasScrolled = false;
 	private hasStayed = false;
@@ -137,7 +137,6 @@ export class PageRead implements IEvent {
 	checkEvent(): boolean {
 		return true;
 	}
-
 	get isBlocking(): boolean {
 		return false;
 	}
