@@ -2,7 +2,7 @@ import { IEvent } from "../Event";
 
 export class PageRead implements IEvent {
 	private minScrollPercentage = 75;
-	private minStaySeconds = 60*1000;
+	private minStaySeconds = 30*1000;
 	private hasScrolled = false;
 	private hasStayed = false;
 	private customEvent: Event;
