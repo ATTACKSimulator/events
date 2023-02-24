@@ -17,6 +17,10 @@
 <body>
 <form>
     <input type="text" placeholder="type your name here">
+    <input type="email" placeholder="type your email here">
+    <input type="password" placeholder="type your password here">
+    <input type="password" autocomplete="cc-number" placeholder="type your cc here">
+    
     <button type="submit">Send</button>
 </form>
 <a href="https://google.com">Click me!</a>
@@ -25,7 +29,7 @@
 <p>End of page</p>
 </body>
 <script>
-	const atsEvents = new ATSEvents({ "apiKey": "***REMOVED***", "debug": true, "shouldRedirect": false, "url": "http://localhost:3000/v0/client-events", "events": ["page_loaded"] });
+	const atsEvents = new ATSEvents({ "apiKey": "***REMOVED***", "debug": true, "shouldRedirect": false, "url": "http://localhost:3000/v0/client-events", "events": ["page_loaded", "input_filled"] });
 	atsEvents.listen();
 
 	setTimeout(() => {
