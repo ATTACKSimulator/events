@@ -99,9 +99,11 @@ export class Manager {
 		}
 
 		const inputElement = event.currentTarget as HTMLInputElement;
-
-		if (this.supportedTypes.indexOf(inputElement.type) !== -1) {
-			return inputElement.type;
+		
+		const type = inputElement.getAttribute("autocomplete") || inputElement.type;	
+		
+		if (this.supportedTypes.indexOf(type) !== -1) {
+			return type;
 		}
 
 		if (inputElement.dataset.type) {
