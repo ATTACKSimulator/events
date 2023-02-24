@@ -106,11 +106,16 @@ export class Manager {
 			return type;
 		}
 
-		if (inputElement.dataset.type) {
-			return inputElement.dataset.type;
+		return null;
+	}
+
+	private findName(remoteEvent: IEvent, event?: Event): string {
+		const type = this.findType(remoteEvent, event);
+		if (!type) {
+			return remoteEvent.name;
 		}
 
-		return null;
+		return `${remoteEvent.name}-${type}`;
 	}
 
 	private packEvent(type, remoteEvent: IEvent): EventPayload {
@@ -148,13 +153,16 @@ export class Manager {
 		}
 
 		if (!remoteEvent.allowMultiple) {
-			if (this.disabledEvents.includes(remoteEvent.name)) {
+
+			const name = this.findName(remoteEvent, event);
+
+			if (this.disabledEvents.includes(name)) {
 				if (this.debug) {
-					console.log(`Preventing duplicate event @${remoteEvent.trigger} (${remoteEvent.name}).`);
+					console.log(`Preventing duplicate event @${remoteEvent.trigger} (${name}).`);
 				}
 				return;
 			}
-			this.disabledEvents.push(remoteEvent.name);
+			this.disabledEvents.push(name);
 		}
 
 		const type = this.findType(remoteEvent, event);
