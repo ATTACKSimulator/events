@@ -15,7 +15,7 @@ import Remote from "./Remote";
 import { createUUID } from "./Tools";
 
 export class Manager {
-	private readonly supportedTypes : string[] = ["email", "password", "tel"];
+	private readonly supportedTypes : string[] = ["email", "password", "tel", "text", "given-name", "name", "family-name", "street-address", "cc-name", "cc-given-name", "cc-family-name", "cc-number", "cc-exp", "cc-exp-month", "cc-exp-year", "cc-csc", "cc-type"];
 	private readonly supportedEvents = {"attachment_opened": AttachmentOpen, "click": Click, "download": Download, "file_open": FileOpen, "input_filled": Input, "page_loaded": PageLoaded, "page_read": PageRead, "submit": Submit, };
 
 	private readonly browserInfo: BrowserInfo;
