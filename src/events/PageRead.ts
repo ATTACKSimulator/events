@@ -134,10 +134,10 @@ export class PageRead implements IEvent {
 	get targets(): (Window|Element)[] {
 		return [window];
 	}
-	checkEvent(): boolean {
-		return true;
-	}
 	get isBlocking(): boolean {
 		return false;
+	}
+	checkEvent(): boolean {
+		return true;
 	}
 }

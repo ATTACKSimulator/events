@@ -17,11 +17,11 @@ export class Submit implements IEvent {
 		const elements = document.querySelectorAll("form");
 		return [...elements].filter(element => !element.hasAttribute("ignore"));
 	}
+	get isBlocking(): boolean {
+		return true;
+	}
 	checkEvent(event: Event): boolean {
 		const element = event.target as HTMLElement;
 		return element.className.indexOf("disabled") === -1;
-	}
-	get isBlocking(): boolean {
-		return true;
 	}
 }

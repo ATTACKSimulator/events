@@ -16,10 +16,10 @@ export class AttachmentOpen implements IEvent {
 	get targets(): Element[] {
 		return [];
 	}
-	checkEvent(): boolean {
+	get isBlocking(): boolean {
 		return true;
 	}
-	get isBlocking(): boolean {
+	checkEvent(): boolean {
 		return true;
 	}
 }

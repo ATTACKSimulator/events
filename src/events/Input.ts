@@ -17,11 +17,11 @@ export class Input implements IEvent {
 		const elements = document.querySelectorAll("select,textarea,input");
 		return [...elements].filter(element => !element.hasAttribute("ignore"));
 	}
+	get isBlocking(): boolean {
+		return false;
+	}
 	checkEvent(event: InputEvent): boolean {
 		const input = event.target as HTMLInputElement;
 		return !!input.value.trim();
-	}
-	get isBlocking(): boolean {
-		return false;
 	}
 }
