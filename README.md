@@ -26,7 +26,7 @@ Include the `bundle.min.js` file in your project.
 The events package can be included by way of a CDN provider like cdnjs.com, unpkg and jsDelivr ...
 
 ```html
-<script src="https://cdn.jsdelivr.net/npm/@attacksimulator/events@1.0.13/dist/bundle.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/@attacksimulator/events@1.1.0/dist/bundle.min.js"></script>
 ```
 
 ## Usage
