@@ -1,7 +1,8 @@
-import { IEvent } from "../Event";
+import IEvent from "../intefaces/IEvent";
+import ATSEvent from "./ATSEvent";
 
-export class PageLoaded implements IEvent {
-	get redirectOnFinish(): boolean {
+export default class PageLoaded extends ATSEvent implements IEvent {
+	get shouldDebounce(): boolean {
 		return false;
 	}
 	get trigger(): string {
@@ -13,13 +14,16 @@ export class PageLoaded implements IEvent {
 	get hasTypes(): boolean {
 		return false;
 	}
-	get targets(): (Element|Window)[] {
-		return [window];
+	get redirectOnFinish(): boolean {
+		return false;
 	}
 	get isBlocking(): boolean {
 		return false;
 	}
-	checkEvent(): boolean {
+	get allowMultiple(): boolean {
+		return false;
+	}
+	validate(): boolean {
 		return true;
 	}
 }

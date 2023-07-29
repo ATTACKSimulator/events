@@ -1,26 +1,30 @@
-import { IEvent } from "../Event";
+import IEvent from "../intefaces/IEvent";
+import ATSEvent from "./ATSEvent";
 
-export class Download implements IEvent {
-	get redirectOnFinish(): boolean {
-		return true;
+export default class Download extends ATSEvent implements IEvent {
+	get shouldDebounce(): boolean {
+		return false;
 	}
-	get trigger(): string {
-		return "click";
+	get trigger(): null {
+		return null;
 	}
 	get name(): string {
 		return "download_file_event";
 	}
 	get hasTypes(): boolean {
-		return true;
+		return false;
 	}
-	get targets(): Element[] {
-		const elements = document.querySelectorAll("a[href$='.exe']");
-		return [...elements].filter(element => !element.hasAttribute("ignore"));
+	get redirectOnFinish(): boolean {
+		return true;
 	}
 	get isBlocking(): boolean {
 		return true;
 	}
-	checkEvent(event: any): boolean {
-		return event.which && event.isTrusted && event.screenX && event.screenX != 0 && event.screenY && event.screenY != 0;
+	get allowMultiple(): boolean {
+		return false;
 	}
+	validate(): boolean {
+		return true;
+	}
+
 }

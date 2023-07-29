@@ -34,3 +34,20 @@ export function removeSubdomain(s: string) {
 
 	return parts.join(".");
 }
+
+const timeouts = {};
+export function debounce<Args extends any[]>(callback: (...args: Args) => void, wait: number, ...args: Args) : void {
+	const [, event] = args;
+	
+	if (! event.target.hasAttribute("data-id")) {
+		event.target.setAttribute("data-id", createUUID());
+	}
+
+	const id = event.target.getAttribute("data-id");
+
+	if (timeouts[id]) {
+		clearTimeout(timeouts[id]);
+	}
+
+	timeouts[id] = setTimeout(callback, wait, ...args);
+}

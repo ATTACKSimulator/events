@@ -1,38 +1,58 @@
 import { BrowserInfo, findBrowserInfo } from "./BrowserInfo";
 import { CampaignInfo, findCampaignInfo } from "./CampaignInfo";
-import { EventPayload, IEvent } from "./Event";
+import { createUUID, debounce } from "./Tools"; 
 
-import { AttachmentOpen } from "./events/AttachmentOpen";
-import { Click } from "./events/Click";
-import { Download } from "./events/Download";
-import { FileOpen } from "./events/FileOpen";
-import { Input } from "./events/Input";
-import { PageLoaded } from "./events/PageLoaded";
-import { PageRead } from "./events/PageRead";
-import { Submit } from "./events/Submit";
-
+import AttachmentOpen from "./events/AttachmentOpen";
+import Click from "./events/Click";
+import Download from "./events/Download";
+import Extension from "./events/Extension";
+import FileOpen from "./events/FileOpen";
+import Input from "./events/Input";
+import Microphone from "./events/Microphone";
+import Notification from "./events/Notification";
+import PageLoaded from "./events/PageLoaded";
+import PageRead from "./events/PageRead";
+import Submit from "./events/Submit";
+import Webcam from "./events/Webcam";
+import IEvent from "./intefaces/IEvent";
+ 
+import IEventPayload from "./intefaces/IEventPayload";
 import Remote from "./Remote";
-import { createUUID } from "./Tools";
+
+import Logger from "./Logger";
 
 export class Manager {
 	private readonly supportedTypes : string[] = ["email", "password", "tel", "text", "given-name", "name", "family-name", "street-address", "cc-name", "cc-given-name", "cc-family-name", "cc-number", "cc-exp", "cc-exp-month", "cc-exp-year", "cc-csc", "cc-type"];
-	private readonly supportedEvents = {"attachment_opened": AttachmentOpen, "click": Click, "download": Download, "file_open": FileOpen, "input_filled": Input, "page_loaded": PageLoaded, "page_read": PageRead, "submit": Submit, };
-
+	private readonly supportedEvents = {
+		"attachment_opened": AttachmentOpen,
+		"click": Click,
+		"download": Download,
+		"extension_installed": Extension,
+		"file_open": FileOpen,
+		"input_filled": Input,
+		"page_loaded": PageLoaded,
+		"page_read": PageRead,
+		"mic_accepted": Microphone,
+		"notification_accepted": Notification,
+		"submit": Submit,
+		"webcam_accepted": Webcam,
+	};
 	private readonly browserInfo: BrowserInfo;
 	private readonly campaignInfo: CampaignInfo;
-	private readonly debug: boolean = false;
 	private readonly redirectUrl: string;
 	private readonly shouldRedirect: boolean;
 	private readonly remote: Remote;
 	private readonly source: string;
 	private readonly token: string;
 
+	private logger: Logger;
 	private handlers = [];
 	private disabledEvents = [];
-
-	remoteEvents: IEvent[];
+	private activeEvents: IEvent[];
 
 	constructor(remote: Remote, eventNames: string[], source: string, redirectUrl: string, shouldRedirect: boolean, debug = false) {
+		this.logger = new Logger(debug);
+
 		this.remote = remote;
 		[this.token, this.campaignInfo] = findCampaignInfo();
 		this.browserInfo = findBrowserInfo();
@@ -41,15 +61,25 @@ export class Manager {
 			eventNames = Object.keys(this.supportedEvents);
 		}
 
-		this.remoteEvents = eventNames.map(name => this.getEvent(name));
+		this.activeEvents = eventNames.map(name => this.getEvent(name)).filter(event => event !== null);
+		this.logger.info(`Enabled events: ${eventNames.join(" | ")}`);
+
 		this.source = source;
 		this.redirectUrl = redirectUrl;
 		this.shouldRedirect = shouldRedirect;
-		this.debug = debug;
 
 		if (this.campaignInfo.download_type) {
 			this.checkDownload();
 		}
+
+	}
+
+	private getEvent(name: string) {
+		if (! this.supportedEvents[name]) {
+			return null;
+		}
+
+		return new (this.supportedEvents[name]);
 	}
 
 	private checkDownload() {
@@ -61,44 +91,52 @@ export class Manager {
 		}
 	}
 
-	private getEvent(name: string) {
-		return new (this.supportedEvents[name]);
-	}
-
-	listen() {
+	public listen() {
 		let i = 0;
-		for(const remoteEvent of this.remoteEvents) {
-			if(this.debug) {
-				console.log(`Listening for event @${remoteEvent.trigger} (${remoteEvent.name})`);
-			}
-
-			const targets = remoteEvent.targets;
-			for(const target of targets) {
-				target.addEventListener(remoteEvent.trigger, this.handlers[i++] = event => this.handle(remoteEvent, event));
+		for(const activeEvent of this.activeEvents) {
+			if (! activeEvent.trigger) {
+				this.logger.info(`The active event ${activeEvent.name} does not have a trigger. Skipping...`);
+			} else {
+				this.logger.info(`Listening for event @${activeEvent.trigger} (${activeEvent.name})`);
+				window.addEventListener(activeEvent.trigger, this.handlers[i++] = (event: Event) => this.prehandle(activeEvent, event));
 			}
 		}
 	}
 
-	stop() {
+	public stop() {
 		let i = 0;
-		for(const remoteEvent of this.remoteEvents) {
-			if(this.debug) {
-				console.log(`Stopping listening for event @${remoteEvent.trigger} (${remoteEvent.name})`);
+		for(const activeEvent of this.activeEvents) {
+			if (! activeEvent.trigger) {
+				continue;
 			}
 
-			const targets = remoteEvent.targets;
-			for(const target of targets) {
-				target.removeEventListener(remoteEvent.trigger, this.handlers[i++]);
-			}
+			this.logger.info(`Stopping listening for event @${activeEvent.trigger} (${activeEvent.name})`);        
+			window.addEventListener(activeEvent.trigger, this.handlers[i++]);
 		}
 	}
 
-	private findType(remoteEvent: IEvent, event?: Event): string | null {
-		if (!remoteEvent.hasTypes || !event) {
+	public trigger(eventName: string): void {
+		const activeEvent = this.getEvent(eventName);
+		if (!activeEvent) {
+			throw new Error(`Unsupported event ${eventName}. Please choose one of ${Object.keys(this.supportedEvents).join(", ")}`);
+		}
+		this.handle(activeEvent, null, false);
+	}
+
+	private prehandle(activeEvent: IEvent, event?: Event) {		
+		if (activeEvent.shouldDebounce) {
+			debounce((...args: [IEvent, Event]) => this.handle(...args), 500, activeEvent, event);
+		} else {
+			this.handle(activeEvent, event);
+		}
+	}
+
+	private findType(activeEvent: IEvent, event?: Event): string | null {
+		if (!activeEvent.hasTypes || !event) {
 			return null;
 		}
 
-		const inputElement = event.currentTarget as HTMLInputElement;
+		const inputElement = event.target as HTMLInputElement;
 		
 		const type = inputElement.getAttribute("autocomplete") || inputElement.type;	
 		
@@ -109,16 +147,16 @@ export class Manager {
 		return null;
 	}
 
-	private findName(remoteEvent: IEvent, event?: Event): string {
-		const type = this.findType(remoteEvent, event);
+	private findName(activeEvent: IEvent, event?: Event): string {
+		const type = this.findType(activeEvent, event);
 		if (!type) {
-			return remoteEvent.name;
+			return activeEvent.name;
 		}
 
-		return `${remoteEvent.name}-${type}`;
+		return `${activeEvent.name}-${type}`;
 	}
 
-	private packEvent(type, remoteEvent: IEvent): EventPayload {
+	private packEvent(type: string, activeEvent: IEvent): IEventPayload {
 		return {
 			"data": {
 				...this.browserInfo,
@@ -127,55 +165,43 @@ export class Manager {
 			"source": this.source,
 			"timestamp": Math.floor(Date.now() / 1000),
 			"ats_header": this.token,
-			"event": remoteEvent.name.toLowerCase(),
+			"event": activeEvent.name.toLowerCase(),
 			"sg_event_id": createUUID(),
 			"sg_message_id": this.campaignInfo.ats_instance_id,
 		};
 	}
 
-	trigger(eventName: string) {
-		const remoteEvent = this.getEvent(eventName);
-		if (!remoteEvent) {
-			throw new Error(`Unsupported event ${eventName}. Please choose one of ${Object.keys(this.supportedEvents).join(", ")}`);
-		}
-		this.handle(remoteEvent);
-	}
+	private handle(activeEvent: IEvent, event?: Event, shouldValidate = true): void {
+		this.logger.info(`Event @${activeEvent.trigger} (${activeEvent.name}) triggered...`);
 
-	private handle(remoteEvent: IEvent, event?: Event) {
-		if (this.debug) {
-			console.log(`Event @${remoteEvent.trigger} (${remoteEvent.name}) triggered...`);
+		if (! activeEvent.validate(event) && shouldValidate) {
+			this.logger.info(`Event @${activeEvent.trigger} (${activeEvent.name}) not valid...`);
+			return;
 		}
 
-		if (event && remoteEvent.isBlocking) {
+		if (event && activeEvent.isBlocking) {
 			event.preventDefault();
 			event.stopPropagation();
 			event.stopImmediatePropagation();
 		}
 
-		if (!remoteEvent.allowMultiple) {
-
-			const name = this.findName(remoteEvent, event);
-
+		if (!activeEvent.allowMultiple) {
+			const name = this.findName(activeEvent, event);
 			if (this.disabledEvents.includes(name)) {
-				if (this.debug) {
-					console.log(`Preventing duplicate event @${remoteEvent.trigger} (${name}).`);
-				}
+				this.logger.info(`Preventing duplicate event @${activeEvent.trigger} (${name}).`);
 				return;
 			}
+
 			this.disabledEvents.push(name);
 		}
 
-		const type = this.findType(remoteEvent, event);
-		const payload = this.packEvent(type, remoteEvent);
+		const type = this.findType(activeEvent, event);
+		const payload = this.packEvent(type, activeEvent);
 		this.remote.post(payload)
-			.then(result => {
-				if (this.debug) {
-					console.log(result);
-				}
-			})
-			.catch(e => {if(this.debug) { console.error(e); }})
+			.then(result => this.logger.info(result))
+			.catch(e => this.logger.error(e))
 			.finally(() => {
-				if (remoteEvent.redirectOnFinish && this.shouldRedirect) {
+				if (activeEvent.redirectOnFinish && this.shouldRedirect) {
 					window.location.href = `${this.redirectUrl}${window.location.search}`;
 				}
 			});

@@ -1,8 +1,9 @@
-import { IEvent } from "../Event";
+import IEvent from "../intefaces/IEvent";
+import ATSEvent from "./ATSEvent";
 
-export class Click implements IEvent {
-	get redirectOnFinish(): boolean {
-		return true;
+export default class Click extends ATSEvent implements IEvent {
+	get shouldDebounce(): boolean {
+		return false;
 	}
 	get trigger(): string {
 		return "click";
@@ -13,14 +14,39 @@ export class Click implements IEvent {
 	get hasTypes(): boolean {
 		return true;
 	}
-	get targets(): Element[] {
-		const elements = document.querySelectorAll("a:not([href$='.exe']),button:not([type=submit]),input[type=button]");
-		return [...elements].filter(element => !element.hasAttribute("ignore"));
-	}
-	get isBlocking(): boolean {
+	get redirectOnFinish(): boolean {
 		return true;
 	}
-	checkEvent(event: any): boolean {
-		return event.which && event.isTrusted && event.screenX && event.screenX != 0 && event.screenY && event.screenY != 0;
+	get isBlocking(): boolean {
+		return false;
 	}
+	get allowMultiple(): boolean {
+		return false; 
+	}
+
+	validate(event: Event): boolean {
+		if (event?.target instanceof HTMLAnchorElement) {
+			return this.validateAnchor(event.target);
+		}
+		
+
+		if (event?.target instanceof HTMLButtonElement) {
+			return this.validateButton(event.target);
+		}
+
+		return false;
+	}
+
+	private validateAnchor(element: HTMLElement): boolean {
+		return this.basicValidation(element);
+	}
+
+	private validateButton(element: HTMLElement): boolean {
+		if (!this.basicValidation(element) || (element.hasAttribute("type") && element.getAttribute("type") === "submit")) {
+			return false;
+		}
+			
+		return true;
+	}
+
 }

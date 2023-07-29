@@ -1,11 +1,12 @@
-import { IEvent } from "../Event";
+import IEvent from "../intefaces/IEvent";
+import ATSEvent from "./ATSEvent";
 
-export class FileOpen implements IEvent {
-	get redirectOnFinish(): boolean {
+export default class FileOpen extends ATSEvent implements IEvent {
+	get shouldDebounce(): boolean {
 		return false;
 	}
-	get trigger(): string {
-		return "";
+	get trigger(): null {
+		return null;
 	}
 	get name(): string {
 		return "file_opened";
@@ -13,13 +14,17 @@ export class FileOpen implements IEvent {
 	get hasTypes(): boolean {
 		return false;
 	}
-	get targets(): Element[] {
-		return [];
+	get redirectOnFinish(): boolean {
+		return true;
 	}
 	get isBlocking(): boolean {
 		return true;
 	}
-	checkEvent(): boolean {
+	get allowMultiple(): boolean {
+		return false;
+	}
+	validate(): boolean {
 		return true;
 	}
+
 }

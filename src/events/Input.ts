@@ -1,8 +1,9 @@
-import { IEvent } from "../Event";
+import IEvent from "../intefaces/IEvent";
+import ATSEvent from "./ATSEvent";
 
-export class Input implements IEvent {
-	get redirectOnFinish(): boolean {
-		return false;
+export default class Input extends ATSEvent implements IEvent {
+	get shouldDebounce(): boolean {
+		return true;
 	}
 	get trigger(): string {
 		return "input";
@@ -13,15 +14,20 @@ export class Input implements IEvent {
 	get hasTypes(): boolean {
 		return true;
 	}
-	get targets(): Element[] {
-		const elements = document.querySelectorAll("select,textarea,input");
-		return [...elements].filter(element => !element.hasAttribute("ignore"));
+	get redirectOnFinish(): boolean {
+		return false;
 	}
 	get isBlocking(): boolean {
 		return false;
+	}	
+	get allowMultiple(): boolean {
+		return true;
 	}
-	checkEvent(event: InputEvent): boolean {
-		const input = event.target as HTMLInputElement;
-		return !!input.value.trim();
+
+	validate(event: Event): boolean {
+		if (event.target instanceof HTMLInputElement) {
+			return this.basicValidation(event.target) && !!event.target.value.trim();
+		}
+		return false;
 	}
-}
+} 

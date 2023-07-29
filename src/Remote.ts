@@ -1,4 +1,4 @@
-import { EventPayload } from "./Event";
+import IEventPayload from "./intefaces/IEventPayload";
 
 export default class Remote {
 	private api_key: string;
@@ -11,7 +11,7 @@ export default class Remote {
 		this.debug = debug;
 	}
 
-	public post(data: EventPayload): Promise<object> {
+	public post(data: IEventPayload): Promise<object> {
 		if (this.debug) {
 			console.log(`Sending event to ${this.url} with data:`);
 			console.table(data);

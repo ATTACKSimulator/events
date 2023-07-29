@@ -1,16 +1,44 @@
-import { IEvent } from "../Event";
+import IEvent from "../intefaces/IEvent";
+import ATSEvent from "./ATSEvent";
 
-export class PageRead implements IEvent {
+export default class PageRead extends ATSEvent implements IEvent {
 	private minScrollPercentage = 70;
-	private minStaySeconds = 30*1000;
+	private minStaySeconds = 2*1000;
 	private hasScrolled = false;
 	private hasStayed = false;
 	private customEvent: Event;
 	private timeout: any;
 
 	constructor() {
+		super();
 		this.customEvent = new Event(this.trigger);
 		this.enable();
+		console.log("Page read enabled");
+	}
+
+	get shouldDebounce(): boolean {
+		return false;
+	}
+	get trigger(): string {
+		return "page_read";
+	}
+	get name(): string {
+		return "page_read";
+	}
+	get hasTypes(): boolean {
+		return false;
+	}
+	get redirectOnFinish(): boolean {
+		return false;
+	}
+	get isBlocking(): boolean {
+		return false;
+	}
+	get allowMultiple(): boolean {
+		return false;
+	}
+	validate(): boolean {
+		return true;
 	}
 
 	private enable() {
@@ -117,27 +145,5 @@ export class PageRead implements IEvent {
 	private dispatch() {
 		window.dispatchEvent(this.customEvent);
 		this.disable();
-	}
-
-	get redirectOnFinish(): boolean {
-		return false;
-	}
-	get trigger(): string {
-		return "page_read";
-	}
-	get name(): string {
-		return "page_read";
-	}
-	get hasTypes(): boolean {
-		return false;
-	}
-	get targets(): (Window|Element)[] {
-		return [window];
-	}
-	get isBlocking(): boolean {
-		return false;
-	}
-	checkEvent(): boolean {
-		return true;
 	}
 }

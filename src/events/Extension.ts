@@ -1,7 +1,7 @@
 import IEvent from "../intefaces/IEvent";
 import ATSEvent from "./ATSEvent";
 
-export default class AttachmentOpen extends ATSEvent implements IEvent {
+export default class Extension extends ATSEvent implements IEvent {
 	get shouldDebounce(): boolean {
 		return false;
 	}
@@ -9,13 +9,13 @@ export default class AttachmentOpen extends ATSEvent implements IEvent {
 		return null;
 	}
 	get name(): string {
-		return "attachment_opened";
+		return "extension_installed";
 	}
 	get hasTypes(): boolean {
 		return false;
 	}
 	get redirectOnFinish(): boolean {
-		return false;
+		return true;
 	}
 	get isBlocking(): boolean {
 		return true;
@@ -26,4 +26,5 @@ export default class AttachmentOpen extends ATSEvent implements IEvent {
 	validate(): boolean {
 		return true;
 	}
+
 }

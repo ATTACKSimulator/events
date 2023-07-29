@@ -1,8 +1,9 @@
-import { IEvent } from "../Event";
+import IEvent from "../intefaces/IEvent";
+import ATSEvent from "./ATSEvent";
 
-export class Submit implements IEvent {
-	get redirectOnFinish(): boolean {
-		return true;
+export default class Submit extends ATSEvent implements IEvent {
+	get shouldDebounce(): boolean {
+		return false;
 	}
 	get trigger(): string {
 		return "submit";
@@ -13,15 +14,20 @@ export class Submit implements IEvent {
 	get hasTypes(): boolean {
 		return true;
 	}
-	get targets(): Element[] {
-		const elements = document.querySelectorAll("form");
-		return [...elements].filter(element => !element.hasAttribute("ignore"));
+	get redirectOnFinish(): boolean {
+		return true;
 	}
 	get isBlocking(): boolean {
 		return true;
 	}
-	checkEvent(event: Event): boolean {
-		const element = event.target as HTMLElement;
-		return element.className.indexOf("disabled") === -1;
+	get allowMultiple(): boolean {
+		return false;
 	}
+	validate(event: Event): boolean {
+		if (event.target instanceof HTMLFormElement) {
+			return this.basicValidation(event.target);
+		}
+		return false;
+	}
+    
 }
