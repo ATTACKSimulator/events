@@ -24,17 +24,39 @@
     <button type="submit">Send</button>
 </form>
 <a href="https://google.com">Click me!</a>
+<a onclick="clicked()" href="https://google.com">Click to download!</a>
 <p>Scroll down</p>
 <div class="spacer"></div>
 <p>End of page</p>
 </body>
 <script>
-	const atsEvents = new ATSEvents({ "apiKey": "***REMOVED***", "debug": true, "shouldRedirect": false, "url": "http://localhost:3000/v0/client-events", "events": ["page_loaded", "input_filled"] });
+	const atsEvents = new ATSEvents({ "apiKey": "***REMOVED***", "debug": true, "shouldRedirect": false, "url": "http://localhost:3000/v0/client-events", "events": ["page_loaded", "page_left", "input_filled"] });
 	atsEvents.listen();
 
 	setTimeout(() => {
-		atsEvents.trigger("click");
+		atsEvents.trigger("button_clicked")
+        .then(() => {
+            console.log("click event sent");
+        })
+        .catch(() => {
+            console.error("something bad happened");
+        })
 	}, 2000);
+
+    async function clicked() {
+        try {
+            await atsEvents.trigger("file_download");
+            
+        } catch (e) {
+            console.error(e);
+        }
+
+        try {
+            await atsEvents.trigger("page_left");
+        } catch (e) {
+            console.error(e);
+        }
+    }
 
 </script>
 
