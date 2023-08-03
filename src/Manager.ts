@@ -6,18 +6,19 @@ import AttachmentOpen from "./events/AttachmentOpen";
 import Click from "./events/Click";
 import Download from "./events/Download";
 import Extension from "./events/Extension";
+import FileDownload from "./events/FileDownload";
 import FileOpen from "./events/FileOpen";
 import Input from "./events/Input";
 import Microphone from "./events/Microphone";
 import Notification from "./events/Notification";
+import PageLeft from "./events/PageLeft";
 import PageLoaded from "./events/PageLoaded";
 import PageRead from "./events/PageRead";
 import Submit from "./events/Submit";
 import Webcam from "./events/Webcam";
 import IEvent from "./intefaces/IEvent";
  
-import IEventPayload from "./intefaces/IEventPayload";
-import Remote from "./Remote";
+import IEventPayload from "./intefaces/IEventPayload";import Remote from "./Remote";
 
 import Logger from "./Logger";
 
@@ -25,24 +26,25 @@ export class Manager {
 	private readonly supportedTypes : string[] = ["email", "password", "tel", "text", "given-name", "name", "family-name", "street-address", "cc-name", "cc-given-name", "cc-family-name", "cc-number", "cc-exp", "cc-exp-month", "cc-exp-year", "cc-csc", "cc-type"];
 	private readonly supportedEvents = {
 		"attachment_opened": AttachmentOpen,
-		"click": Click,
+		"button_clicked": Click,
 		"download": Download,
 		"extension_installed": Extension,
+		"file_download": FileDownload,		
 		"file_open": FileOpen,
 		"input_filled": Input,
+		"page_left": PageLeft,
 		"page_loaded": PageLoaded,
 		"page_read": PageRead,
 		"mic_accepted": Microphone,
 		"notification_accepted": Notification,
-		"submit": Submit,
+		"form_submitted": Submit,
 		"webcam_accepted": Webcam,
 	};
 	private readonly browserInfo: BrowserInfo;
 	private readonly campaignInfo: CampaignInfo;
 	private readonly redirectUrl: string;
 	private readonly shouldRedirect: boolean;
-	private readonly remote: Remote;
-	private readonly source: string;
+	private readonly remote: Remote;	private readonly source: string;
 	private readonly token: string;
 
 	private logger: Logger;
