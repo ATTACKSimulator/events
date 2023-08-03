@@ -8,6 +8,9 @@ export default class Input extends ATSEvent implements IEvent {
 	get trigger(): string {
 		return "input";
 	}
+	get source(): Window {
+		return window;
+	}
 	get name(): string {
 		return "input_filled";
 	}

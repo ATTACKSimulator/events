@@ -8,8 +8,11 @@ export default class Click extends ATSEvent implements IEvent {
 	get trigger(): string {
 		return "click";
 	}
+	get source(): Window {
+		return window;
+	}
 	get name(): string {
-		return "page_left";
+		return "button_clicked";
 	}
 	get hasTypes(): boolean {
 		return true;

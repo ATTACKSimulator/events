@@ -22,6 +22,9 @@ export default class PageRead extends ATSEvent implements IEvent {
 	get trigger(): string {
 		return "page_read";
 	}
+	get source(): Window {
+		return window;
+	}
 	get name(): string {
 		return "page_read";
 	}

@@ -8,6 +8,9 @@ export default class PageLoaded extends ATSEvent implements IEvent {
 	get trigger(): string {
 		return "load";
 	}
+	get source(): Window {
+		return window;
+	}
 	get name(): string {
 		return "page_loaded";
 	}

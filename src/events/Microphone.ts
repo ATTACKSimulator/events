@@ -8,6 +8,9 @@ export default class Microphone extends ATSEvent implements IEvent {
 	get trigger(): null {
 		return null;
 	}
+	get source(): null {
+		return null;
+	}
 	get name(): string {
 		return "mic_accepted";
 	}

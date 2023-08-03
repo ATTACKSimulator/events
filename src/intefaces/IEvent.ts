@@ -11,7 +11,9 @@ export default interface IEvent {
     get isBlocking(): boolean
     // flag to indicate if the event can be triggered multiple times
     get allowMultiple(): boolean;
+    // the event source
+    get source(): Window | Document | null;
     // check if the event is valid
     validate(event: Event): boolean;
-};
+}
  

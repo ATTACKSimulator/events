@@ -8,6 +8,9 @@ export default class Submit extends ATSEvent implements IEvent {
 	get trigger(): string {
 		return "submit";
 	}
+	get source(): Window {
+		return window;
+	}
 	get name(): string {
 		return "form_submitted";
 	}

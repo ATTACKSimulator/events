@@ -8,6 +8,9 @@ export default class AttachmentOpen extends ATSEvent implements IEvent {
 	get trigger(): null {
 		return null;
 	}
+	get source(): null {
+		return null;
+	}
 	get name(): string {
 		return "attachment_opened";
 	}

@@ -8,6 +8,9 @@ export default class Extension extends ATSEvent implements IEvent {
 	get trigger(): null {
 		return null;
 	}
+	get source(): null {
+		return null;
+	}
 	get name(): string {
 		return "extension_installed";
 	}

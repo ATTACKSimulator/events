@@ -98,7 +98,7 @@ export class Manager {
 				this.logger.info(`The active event ${activeEvent.name} does not have a trigger. Skipping...`);
 			} else {
 				this.logger.info(`Listening for event @${activeEvent.trigger} (${activeEvent.name})`);
-				window.addEventListener(activeEvent.trigger, this.handlers[i++] = (event: Event) => this.prehandle(activeEvent, event));
+				activeEvent.source.addEventListener(activeEvent.trigger, this.handlers[i++] = (event: Event) => this.prehandle(activeEvent, event));
 			}
 		}
 	}
@@ -111,7 +111,7 @@ export class Manager {
 			}
 
 			this.logger.info(`Stopping listening for event @${activeEvent.trigger} (${activeEvent.name})`);        
-			window.addEventListener(activeEvent.trigger, this.handlers[i++]);
+			activeEvent.source.addEventListener(activeEvent.trigger, this.handlers[i++]);
 		}
 	}
 
@@ -127,8 +127,7 @@ export class Manager {
 		if (activeEvent.shouldDebounce) {
 			debounce((...args: [IEvent, Event]) => this.handle(...args), 500, activeEvent, event);
 		} else {
-			this.handle(activeEvent, event);
-		}
+			this.handle(activeEvent, event);		}
 	}
 
 	private findType(activeEvent: IEvent, event?: Event): string | null {
