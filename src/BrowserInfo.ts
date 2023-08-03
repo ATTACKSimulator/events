@@ -35,7 +35,8 @@ export interface BrowserInfo {
 }
 
 function findBrowser(): Browser {
-	let verOffset, browser: Browser = {};
+	let verOffset: number;
+	const browser: Browser = {};
 	const userAgent = navigator.userAgent;
 
 	// Opera
