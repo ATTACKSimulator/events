@@ -16,28 +16,22 @@ export default class Remote {
 			console.log(`Sending event to ${this.url} with data:`);
 			console.table(data);
 		}
-		return new Promise((resolve, reject) => {
-			const xhr = new XMLHttpRequest();
-			xhr.open("POST", this.url, true);
-			xhr.setRequestHeader("Content-type", "application/json");
-			xhr.setRequestHeader("api-key", this.api_key);
 
-			xhr.onreadystatechange = function () {
-				if (xhr.readyState === 4 && xhr.status === 200) {
-					if (xhr.responseText) {
-						const json = JSON.parse(xhr.responseText);
-						resolve(json);
-					} else {
-						resolve({});
-					}
-				}
-			};
-
-			xhr.onerror = function(e) {
-				reject(e);
-			};
-
-			xhr.send(JSON.stringify(data));
+		return fetch(this.url, {
+			method: "POST",
+			headers: {
+				"Content-type": "application/json",
+				"api-key": this.api_key,
+			},
+			keepalive: true,
+			body: JSON.stringify(data),
+		}).then(response => {
+			const contentType = response.headers.get("content-type");
+			if (contentType && contentType.indexOf("application/json") !== -1) {
+				return response.json();
+			} else {
+				return response.text();
+			}
 		});
 	}
 }
