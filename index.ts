@@ -41,8 +41,8 @@ class ATSEvents {
 		this.manager.stop();
 	}
 
-	trigger(name: string) {
-		this.manager.trigger(name);
+	trigger(name: string): Promise<void> {
+		return this.manager.trigger(name);
 	}
 }
 

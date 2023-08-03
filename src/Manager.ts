@@ -18,7 +18,8 @@ import Submit from "./events/Submit";
 import Webcam from "./events/Webcam";
 import IEvent from "./intefaces/IEvent";
  
-import IEventPayload from "./intefaces/IEventPayload";import Remote from "./Remote";
+import IEventPayload from "./intefaces/IEventPayload";
+import Remote from "./Remote";
 
 import Logger from "./Logger";
 
@@ -44,7 +45,8 @@ export class Manager {
 	private readonly campaignInfo: CampaignInfo;
 	private readonly redirectUrl: string;
 	private readonly shouldRedirect: boolean;
-	private readonly remote: Remote;	private readonly source: string;
+	private readonly remote: Remote;
+	private readonly source: string;
 	private readonly token: string;
 
 	private logger: Logger;
@@ -117,25 +119,28 @@ export class Manager {
 		}
 	}
 
-	public trigger(eventName: string): void {
+	public trigger(eventName: string): Promise<void> {
 		const activeEvent = this.getEvent(eventName);
 		if (!activeEvent) {
 			throw new Error(`Unsupported event ${eventName}. Please choose one of ${Object.keys(this.supportedEvents).join(", ")}`);
 		}
-		this.handle(activeEvent, null, false);
+
+		return this.executeEvent(activeEvent, null, false);
 	}
 
 	private prehandle(activeEvent: IEvent, event?: Event) {		
 		if (activeEvent.shouldDebounce) {
 			debounce((...args: [IEvent, Event]) => this.handle(...args), 500, activeEvent, event);
 		} else {
-			this.handle(activeEvent, event);		}
+			this.handle(activeEvent, event);
+		}
 	}
 
 	private findType(activeEvent: IEvent, event?: Event): string | null {
 		if (!activeEvent.hasTypes || !event) {
 			return null;
 		}
+
 		const inputElement = event.target as HTMLInputElement;
 		
 		const type = inputElement.getAttribute("autocomplete") || inputElement.type;	
@@ -172,11 +177,35 @@ export class Manager {
 	}
 
 	private handle(activeEvent: IEvent, event?: Event, shouldValidate = true): void {
+		this.executeEvent(activeEvent, event, shouldValidate)
+			.catch(e => this.logger.error(e));			
+	}
+
+	private checkEvent(activeEvent: IEvent, shouldValidate = true): void {
+		if (! activeEvent.validate(event) && shouldValidate) {
+			throw new Error(`Event @${activeEvent.trigger} (${activeEvent.name}) not valid...`);
+		}
+	}
+
+	private checkMultiple(activeEvent: IEvent, event?: Event): void {
+		if (!activeEvent.allowMultiple) {
+			const name = this.findName(activeEvent, event);
+			if (this.disabledEvents.includes(name)) {
+				throw new Error(`Preventing duplicate event @${activeEvent.trigger} (${name}).`);
+			}
+
+			this.disabledEvents.push(name);
+		}
+	}
+
+	private executeEvent(activeEvent: IEvent, event?: Event, shouldValidate = true): Promise<void> {
 		this.logger.info(`Event @${activeEvent.trigger} (${activeEvent.name}) triggered...`);
 
-		if (! activeEvent.validate(event) && shouldValidate) {
-			this.logger.info(`Event @${activeEvent.trigger} (${activeEvent.name}) not valid...`);
-			return;
+		try {
+			this.checkEvent(activeEvent, shouldValidate);
+		} catch (e) {
+			this.logger.error(e);
+			return new Promise((resolve, reject) => reject(e));
 		}
 
 		if (event && activeEvent.isBlocking) {
@@ -185,25 +214,23 @@ export class Manager {
 			event.stopImmediatePropagation();
 		}
 
-		if (!activeEvent.allowMultiple) {
-			const name = this.findName(activeEvent, event);
-			if (this.disabledEvents.includes(name)) {
-				this.logger.info(`Preventing duplicate event @${activeEvent.trigger} (${name}).`);
-				return;
-			}
-
-			this.disabledEvents.push(name);
+		try {
+			this.checkMultiple(activeEvent, event);
+		} catch(e) {
+			this.logger.error(e);
+			return new Promise((resolve, reject) => reject(e));
 		}
 
 		const type = this.findType(activeEvent, event);
 		const payload = this.packEvent(type, activeEvent);
-		this.remote.post(payload)
+		
+		return this.remote.post(payload)
 			.then(result => this.logger.info(result))
-			.catch(e => this.logger.error(e))
 			.finally(() => {
 				if (activeEvent.redirectOnFinish && this.shouldRedirect) {
 					window.location.href = `${this.redirectUrl}${window.location.search}`;
 				}
-			});
+			});		
+
 	}
 }
