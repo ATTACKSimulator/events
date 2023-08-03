@@ -111,7 +111,7 @@ export class Manager {
 			}
 
 			this.logger.info(`Stopping listening for event @${activeEvent.trigger} (${activeEvent.name})`);        
-			activeEvent.source.addEventListener(activeEvent.trigger, this.handlers[i++]);
+			activeEvent.source.removeEventListener(activeEvent.trigger, this.handlers[i++]);
 		}
 	}
 
@@ -134,7 +134,6 @@ export class Manager {
 		if (!activeEvent.hasTypes || !event) {
 			return null;
 		}
-
 		const inputElement = event.target as HTMLInputElement;
 		
 		const type = inputElement.getAttribute("autocomplete") || inputElement.type;	
