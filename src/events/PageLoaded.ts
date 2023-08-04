@@ -26,7 +26,7 @@ export default class PageLoaded extends ATSEvent implements IEvent {
 	get allowMultiple(): boolean {
 		return false;
 	}
-	validate(): boolean {
+	isValid(): boolean {
 		return true;
 	}
 }

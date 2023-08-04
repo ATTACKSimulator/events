@@ -14,6 +14,6 @@ export default interface IEvent {
     // the event source
     get source(): Window | Document | null;
     // check if the event is valid
-    validate(event: Event): boolean;
+    isValid(event: Event): boolean;
 }
  

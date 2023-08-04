@@ -182,7 +182,7 @@ export class Manager {
 	}
 
 	private checkEvent(activeEvent: IEvent, shouldValidate = true): void {
-		if (! activeEvent.validate(event) && shouldValidate) {
+		if (! activeEvent.isValid(event) && shouldValidate) {
 			throw new Error(`Event @${activeEvent.trigger} (${activeEvent.name}) not valid...`);
 		}
 	}

@@ -27,7 +27,7 @@ export default class Input extends ATSEvent implements IEvent {
 		return true;
 	}
 
-	validate(event: Event): boolean {
+	isValid(event: Event): boolean {
 		if (event.target instanceof HTMLInputElement) {
 			return this.basicValidation(event.target) && !!event.target.value.trim();
 		}

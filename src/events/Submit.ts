@@ -26,7 +26,7 @@ export default class Submit extends ATSEvent implements IEvent {
 	get allowMultiple(): boolean {
 		return false;
 	}
-	validate(event: Event): boolean {
+	isValid(event: Event): boolean {
 		if (event.target instanceof HTMLFormElement) {
 			return this.basicValidation(event.target);
 		}

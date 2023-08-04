@@ -27,7 +27,7 @@ export default class Click extends ATSEvent implements IEvent {
 		return false; 
 	}
 
-	validate(event: Event): boolean {
+	isValid(event: Event): boolean {
 		if (event?.target instanceof HTMLAnchorElement) {
 			return this.validateAnchor(event.target);
 		}

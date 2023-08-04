@@ -40,7 +40,7 @@ export default class PageRead extends ATSEvent implements IEvent {
 	get allowMultiple(): boolean {
 		return false;
 	}
-	validate(): boolean {
+	isValid(): boolean {
 		return true;
 	}
 
