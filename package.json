@@ -4,7 +4,7 @@
     "type": "git",
     "url": "https://github.com/ATTACKSimulator/events.git"
   },
-  "version": "1.2.1",
+  "version": "1.2.2",
   "description": "This package can be used to enable events collection on a landing page and send them back to ATTACK Simulator.",
   "main": "dist/events.js",
   "scripts": {
