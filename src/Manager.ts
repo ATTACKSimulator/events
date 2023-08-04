@@ -16,8 +16,10 @@ import PageLoaded from "./events/PageLoaded";
 import PageRead from "./events/PageRead";
 import Submit from "./events/Submit";
 import Webcam from "./events/Webcam";
-import IEvent from "./intefaces/IEvent";
 import Location from "./events/Location";
+import Clipboard from "./events/Clipboard";
+
+import IEvent from "./intefaces/IEvent";
 
 import IEventPayload from "./intefaces/IEventPayload";
 import Remote from "./Remote";
@@ -42,6 +44,7 @@ export class Manager {
 		"form_submitted": Submit,
 		"webcam_accepted": Webcam,
 		"location_accepted": Location,
+		"clipboard_accepted": Clipboard,
 	};
 	private readonly browserInfo: BrowserInfo;
 	private readonly campaignInfo: CampaignInfo;
