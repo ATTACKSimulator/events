@@ -67,6 +67,7 @@ ev.listen();
 | **webcam_accepted**       | manual + redirect | The events is triggered manually and should be run after a user accepts the webcam permissions prompt.  After this event is sent, the webpage will redirect to `redirectUrl`.        |
 | **location_accepted**     | manual + redirect | The events is triggered manually and should be run after a user accepts the location permissions prompt.  After this event is sent, the webpage will redirect to `redirectUrl`.      |
 | **notification_accepted** | manual + redirect | The events is triggered manually and should be run after a user accepts the notifications permissions prompt.  After this event is sent, the webpage will redirect to `redirectUrl`. |
+| **clipboard_accepted**    | manual + redirect | The events is triggered manually and should be run after a user accepts the clipboard permissions prompt.  After this event is sent, the webpage will redirect to `redirectUrl`.     |
 
 
 
