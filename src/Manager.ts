@@ -17,7 +17,8 @@ import PageRead from "./events/PageRead";
 import Submit from "./events/Submit";
 import Webcam from "./events/Webcam";
 import IEvent from "./intefaces/IEvent";
- 
+import Location from "./events/Location";
+
 import IEventPayload from "./intefaces/IEventPayload";
 import Remote from "./Remote";
 
@@ -40,6 +41,7 @@ export class Manager {
 		"notification_accepted": Notification,
 		"form_submitted": Submit,
 		"webcam_accepted": Webcam,
+		"location_accepted": Location,
 	};
 	private readonly browserInfo: BrowserInfo;
 	private readonly campaignInfo: CampaignInfo;
