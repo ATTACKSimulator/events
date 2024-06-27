@@ -42,8 +42,8 @@ export default class PageRead extends ATSEvent implements IEvent {
 	}
 
 	get canScroll(): boolean {
-		// determine if the user can scroll on the page
-		return window.innerHeight / document.documentElement.scrollHeight > .85;
+		// determine if the user can scroll the page
+		return window.innerHeight / document.documentElement.scrollHeight < .85;
 	}
 
 	isValid(): boolean {
