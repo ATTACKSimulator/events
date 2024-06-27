@@ -40,6 +40,12 @@ export default class PageRead extends ATSEvent implements IEvent {
 	get allowMultiple(): boolean {
 		return false;
 	}
+
+	get canScroll(): boolean {
+		// determine if the user can scroll on the page
+		return window.innerHeight / document.documentElement.scrollHeight > .85;
+	}
+
 	isValid(): boolean {
 		return true;
 	}
@@ -139,7 +145,7 @@ export default class PageRead extends ATSEvent implements IEvent {
 	}
 
 	private stayed() {
-		if(this.hasScrolled) {
+		if(this.hasScrolled || !this.canScroll) {
 			this.dispatch();
 		}
 		this.hasStayed = true;
