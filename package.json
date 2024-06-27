@@ -4,13 +4,14 @@
     "type": "git",
     "url": "https://github.com/ATTACKSimulator/events.git"
   },
-  "version": "1.2.2",
+  "version": "1.2.3",
   "description": "This package can be used to enable events collection on a landing page and send them back to ATTACK Simulator.",
   "main": "dist/events.js",
   "scripts": {
     "lint": "eslint . --ext .ts",
     "build": "webpack",
-    "start": "webpack --watch"
+    "start": "webpack --watch",
+    "release": "bumpp --all"
   },
   "author": "ATTACK Simulator",
   "homepage": "https://attacksimulator.com",
@@ -18,6 +19,7 @@
   "devDependencies": {
     "@typescript-eslint/eslint-plugin": "^5.10.1",
     "@typescript-eslint/parser": "^5.10.1",
+    "bumpp": "^9.4.1",
     "eslint": "^8.8.0",
     "terser-webpack-plugin": "^5.3.0",
     "ts-loader": "^9.2.6",

