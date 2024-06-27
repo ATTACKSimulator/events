@@ -4,14 +4,14 @@
     "type": "git",
     "url": "https://github.com/ATTACKSimulator/events.git"
   },
-  "version": "1.2.5",
+  "version": "1.2.6",
   "description": "This package can be used to enable events collection on a landing page and send them back to ATTACK Simulator.",
   "main": "dist/events.js",
   "scripts": {
     "lint": "eslint . --ext .ts",
     "build": "webpack",
     "start": "webpack --watch",
-    "release": "bumpp --all"
+    "release": "webpack && bumpp --all"
   },
   "author": "ATTACK Simulator",
   "homepage": "https://attacksimulator.com",
