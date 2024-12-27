@@ -22,15 +22,15 @@ export default class Input extends ATSEvent implements IEvent {
 	}
 	get isBlocking(): boolean {
 		return false;
-	}	
+	}
 	get allowMultiple(): boolean {
 		return true;
-	}
+	}  
 
 	isValid(event: Event): boolean {
-		if (event.target instanceof HTMLInputElement) {
+		if (event?.target instanceof HTMLInputElement) {
 			return this.basicValidation(event.target) && !!event.target.value.trim();
 		}
 		return false;
 	}
-} 
+}
