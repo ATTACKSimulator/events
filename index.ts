@@ -1,19 +1,11 @@
 import { Manager } from "./src/Manager";
 import Remote from "./src/Remote";
 import {removeSubdomain} from "./src/Tools";
+import IOptions from "./src/intefaces/IOption";
 
-interface Options {
-	apiKey?: string,
-	debug?: boolean,
-	events?: string[]
-	redirectUrl: string,
-	shouldRedirect: boolean,
-	source: string,
-	url: string,
-}
-
-const defaultOptions: Options = {
-	events: [],
+const defaultOptions: IOptions = {
+	eventsToInclude: [],
+	eventsToExclude: [],
 	debug: false,
 	shouldRedirect: true,
 	redirectUrl: `https://oops.${removeSubdomain(window.location.hostname)}`,
@@ -24,13 +16,13 @@ const defaultOptions: Options = {
 class ATSEvents {
 	private manager: Manager;
 
-	constructor(options: Options) {
+	constructor(options: IOptions) {
 		const _options = {...defaultOptions, ...options};
 		if (_options.debug) {
 			console.log(_options);
 		}
 		const remote = new Remote(_options.apiKey, _options.url, _options.debug);
-		this.manager = new Manager(remote, _options.events, _options.source, _options.redirectUrl, _options.shouldRedirect, _options.debug);
+		this.manager = new Manager(remote, _options);
 	}
 
 	listen() {
