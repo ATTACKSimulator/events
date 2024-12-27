@@ -30,7 +30,7 @@
 <p>End of page</p>
 </body>
 <script>
-	const atsEvents = new ATSEvents({ "apiKey": "***REMOVED***", "debug": true, "shouldRedirect": false, "url": "http://localhost:3000/v0/client-events", "events": ["page_loaded", "page_left", "input_filled"] });
+	const atsEvents = new ATSEvents({ "apiKey": "***REMOVED***", "debug": true, "shouldRedirect": false, "url": "http://localhost:3000/v0/client-events", "eventsToInclude": ["page_loaded", "page_left", "input_filled"] });
 	atsEvents.listen();
     
     atsEvents.on("page_loaded", (event) => {
