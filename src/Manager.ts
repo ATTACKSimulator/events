@@ -25,6 +25,7 @@ import IEventPayload from "./intefaces/IEventPayload";
 import Remote from "./Remote";
 
 import Logger from "./Logger";
+import IOptions from "./intefaces/IOption";
 
 interface EventSubscription {
 	eventName: string;
@@ -66,30 +67,56 @@ export class Manager {
 	private disabledEvents = [];
 	private activeEvents: IEvent[];
 
-	constructor(remote: Remote, eventNames: string[], source: string, redirectUrl: string, shouldRedirect: boolean, debug = false) {
+	// eventNames: string[], source: string, redirectUrl: string, shouldRedirect: boolean, debug = false
+
+	constructor(remote: Remote, { eventsToInclude = [], eventsToExclude = [], source, redirectUrl, shouldRedirect, debug = false }: IOptions) {
 		this.logger = new Logger(debug);
 
 		this.remote = remote;
 		[this.token, this.campaignInfo] = findCampaignInfo();
 		this.browserInfo = findBrowserInfo();
 
-		if (!eventNames.length) {
-			eventNames = Object.keys(this.supportedEvents);
-		}
-
-		this.activeEvents = eventNames.map(name => this.getEvent(name)).filter(event => event !== null);
-		this.logger.info(`Enabled events: ${eventNames.join(" | ")}`);
+		this.activeEvents = this.decideActiveEvents(eventsToInclude, eventsToExclude);
+		this.logger.info(`Enabled events: ${eventsToInclude.join(" | ")}`);
 
 		this.source = source;
 		this.redirectUrl = redirectUrl;
 		this.shouldRedirect = shouldRedirect;
 
 		if (this.campaignInfo.download_type) {
-			this.checkDownload();
+			this.checkDownload().then(() => {
+				//
+			});
 		}
-
 	}
 
+	/**
+	 * Decides which events should be active based on the provided lists of events to include and exclude.
+	 *
+	 * @param {string[]} eventsToInclude - The list of event names to include.
+	 * @param {string[]} eventsToExclude - The list of event names to exclude.
+	 * @returns {IEvent[]} - The list of active events.
+	 */
+	private decideActiveEvents(eventsToInclude: string[], eventsToExclude: string[]): IEvent[] {
+		if (eventsToInclude.length) {
+			return eventsToInclude.map(name => this.getEvent(name)).filter(event => event !== null);
+		}
+
+		const activeEvents = Object.keys(this.supportedEvents).map(name => this.getEvent(name)).filter(event => event !== null);
+
+		if (eventsToExclude.length) {
+			return activeEvents.filter(event => !eventsToExclude.includes(event.name));
+		}
+
+		return activeEvents;
+	}
+
+	/**
+	 * Retrieves an event instance by its name.
+	 *
+	 * @param {string} name - The name of the event to retrieve.
+	 * @returns {IEvent | null} - The event instance if found, otherwise null.
+	 */
 	private getEvent(name: string) {
 		if (! this.supportedEvents[name]) {
 			return null;
@@ -239,6 +266,7 @@ export class Manager {
 
 		return this.remote.post(payload)
 			.then(result => this.logger.info(result))
+			.catch(e => this.logger.error(e))
 			.finally(() => {
 				if (activeEvent.redirectOnFinish && this.shouldRedirect) {
 					window.location.href = `${this.redirectUrl}${window.location.search}`;
