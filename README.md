@@ -15,6 +15,7 @@ npm i @attacksimulator/events --save
 ```
 
 ### Browser
+
 Include the `bundle.min.js` file in your project.
 
 ```html
@@ -35,39 +36,37 @@ Before running the plugin, make sure you get an api key from our support team.
 
 ```html
 <script>
-const ev = new ATSEvents({ "apiKey": "YOUR_API_KEY"});
-ev.listen();
+  const ev = new ATSEvents({ apiKey: "YOUR_API_KEY" });
+  ev.listen();
 </script>
 ```
 
 ## Options
 
-| Name                 | Type       | Description                                                                                                               |
-|----------------------|------------|---------------------------------------------------------------------------------------------------------------------------|
-| **apiKey**           | `string`   | The key required to access our api. You can get it by contacting our support team.                                        |
-| **events**           | `string[]` | Set the events to watch. Leave empty to watch all available events. The default value is `[]`.                            |
-| **debug**            | `boolean`  | Set debugging `true` of `false`. The default value is `false`.                                                            |
-| **shouldRedirect**   | `boolean`  | Specify whether the page should redirect after `click` or `submit` events. The default value is `true`.                   |
-| **redirectUrl**      | `string`   | Set the redirect url after affecting events have been triggered. The default value is `https://tips.attacksimulator.com`. |
-| **source**           | `string`   | Set the source of the events. Supported values are `LP` or `LP_EDU`. The default value is `LP`.                           |
+| Name               | Type       | Description                                                                                                               |
+| ------------------ | ---------- | ------------------------------------------------------------------------------------------------------------------------- |
+| **apiKey**         | `string`   | The key required to access our api. You can get it by contacting our support team.                                        |
+| **events**         | `string[]` | Set the events to watch. Leave empty to watch all available events. The default value is `[]`.                            |
+| **debug**          | `boolean`  | Set debugging `true` of `false`. The default value is `false`.                                                            |
+| **shouldRedirect** | `boolean`  | Specify whether the page should redirect after `click` or `submit` events. The default value is `true`.                   |
+| **redirectUrl**    | `string`   | Set the redirect url after affecting events have been triggered. The default value is `https://tips.attacksimulator.com`. |
+| **source**         | `string`   | Set the source of the events. Supported values are `LP` or `LP_EDU`. The default value is `LP`.                           |
+| **url**            | `string`   | The destination url that the events should be sent at                                                                     |
 
 ## Available events
 
-| Name                      | Type              | Description                                                                                                                                                                          |
-|---------------------------|-------------------|--------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
-| **attachment_opened**     | internal          | The event gets triggered automatically when an attachment is opened. This requires the url of the host page to have a `file_type=attachment` query string.                           |
-| **button_clicked**        | user+redirect     | The event gets triggered when a user clicks on a link that does not point to a file. After this event is sent, the webpage will redirect to `redirectUrl`.                           |
-| **download_file_event**   | user              | The event gets triggered when a user clicks on a link that does point to a file.                                                                                                     |
-| **file_opened**           | internal          | The event gets triggered automatically when an attachment is opened. This requires the url of the host page to have a `file_type=download` query string.                             |
-| **input_filled**          | user              | The event gets triggered whenever a user types something in a input field.                                                                                                           |
-| **page_loaded**           | internal          | The events triggers automatically whenever the page is loaded.                                                                                                                       |
-| **page_read**             | internal          | THe event gets triggered automatically whenever a user stays on the page for at least 3 minutes. This event is useful for educational pages.                                         |
-| **form_submitted**        | user + redirect   | The events is triggered when a user submits a form.  After this event is sent, the webpage will redirect to `redirectUrl`.                                                           |
-| **mic_accepted**          | manual + redirect | The events is triggered manually and should be run after a user accepts the microphone permissions prompt.  After this event is sent, the webpage will redirect to `redirectUrl`.    |
-| **webcam_accepted**       | manual + redirect | The events is triggered manually and should be run after a user accepts the webcam permissions prompt.  After this event is sent, the webpage will redirect to `redirectUrl`.        |
-| **location_accepted**     | manual + redirect | The events is triggered manually and should be run after a user accepts the location permissions prompt.  After this event is sent, the webpage will redirect to `redirectUrl`.      |
-| **notification_accepted** | manual + redirect | The events is triggered manually and should be run after a user accepts the notifications permissions prompt.  After this event is sent, the webpage will redirect to `redirectUrl`. |
-| **clipboard_accepted**    | manual + redirect | The events is triggered manually and should be run after a user accepts the clipboard permissions prompt.  After this event is sent, the webpage will redirect to `redirectUrl`.     |
-
-
-
+| Name                      | Type              | Description                                                                                                                                                                         |
+| ------------------------- | ----------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **attachment_opened**     | internal          | The event gets triggered automatically when an attachment is opened. This requires the url of the host page to have a `file_type=attachment` query string.                          |
+| **button_clicked**        | user+redirect     | The event gets triggered when a user clicks on a link that does not point to a file. After this event is sent, the webpage will redirect to `redirectUrl`.                          |
+| **download_file_event**   | user              | The event gets triggered when a user clicks on a link that does point to a file.                                                                                                    |
+| **file_opened**           | internal          | The event gets triggered automatically when an attachment is opened. This requires the url of the host page to have a `file_type=download` query string.                            |
+| **input_filled**          | user              | The event gets triggered whenever a user types something in a input field.                                                                                                          |
+| **page_loaded**           | internal          | The events triggers automatically whenever the page is loaded.                                                                                                                      |
+| **page_read**             | internal          | THe event gets triggered automatically whenever a user stays on the page for at least 3 minutes. This event is useful for educational pages.                                        |
+| **form_submitted**        | user + redirect   | The events is triggered when a user submits a form. After this event is sent, the webpage will redirect to `redirectUrl`.                                                           |
+| **mic_accepted**          | manual + redirect | The events is triggered manually and should be run after a user accepts the microphone permissions prompt. After this event is sent, the webpage will redirect to `redirectUrl`.    |
+| **webcam_accepted**       | manual + redirect | The events is triggered manually and should be run after a user accepts the webcam permissions prompt. After this event is sent, the webpage will redirect to `redirectUrl`.        |
+| **location_accepted**     | manual + redirect | The events is triggered manually and should be run after a user accepts the location permissions prompt. After this event is sent, the webpage will redirect to `redirectUrl`.      |
+| **notification_accepted** | manual + redirect | The events is triggered manually and should be run after a user accepts the notifications permissions prompt. After this event is sent, the webpage will redirect to `redirectUrl`. |
+| **clipboard_accepted**    | manual + redirect | The events is triggered manually and should be run after a user accepts the clipboard permissions prompt. After this event is sent, the webpage will redirect to `redirectUrl`.     |
