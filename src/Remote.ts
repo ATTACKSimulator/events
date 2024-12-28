@@ -11,19 +11,19 @@ export default class Remote {
 		this.debug = debug;
 	}
 
-	public post(data: IEventPayload): Promise<object> {
 	/**
 	 * Sends a POST request with the specified data to the configured URL.
 	 *
 	 * @param {IEventPayload} data - The data to be sent in the POST request.
 	 * @returns {Promise<object|string>} - A promise that resolves to the response data, either as an object if the response is JSON, or as a string otherwise.
 	 */
+	public async post(data: IEventPayload): Promise<object|string> {
 		if (this.debug) {
 			console.log(`Sending event to ${this.url} with data:`);
 			console.table(data);
 		}
 
-		return fetch(this.url, {
+		const response = await fetch(this.url, {
 			method: "POST",
 			headers: {
 				"Content-type": "application/json",
@@ -31,13 +31,13 @@ export default class Remote {
 			},
 			keepalive: true,
 			body: JSON.stringify(data),
-		}).then(response => {
-			const contentType = response.headers.get("content-type");
-			if (contentType && contentType.indexOf("application/json") !== -1) {
-				return response.json();
-			} else {
-				return response.text();
-			}
 		});
+
+		const contentType = response.headers.get("content-type");
+		if (contentType && contentType.indexOf("application/json") !== -1) {
+			return response.json();
+		} else {
+			return response.text();
+		}
 	}
 }
