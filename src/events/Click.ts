@@ -37,6 +37,20 @@ export default class Click extends ATSEvent implements IEvent {
 			return this.validateButton(event.target);
 		}
 
+		// check if parents are anchor or button
+		let element = event.target as HTMLElement;
+		let limit = 10;
+		while (element.parentElement && limit > 0) {
+			if (element.parentElement instanceof HTMLAnchorElement) {
+				return this.validateAnchor(element.parentElement);
+			}
+			if (element.parentElement instanceof HTMLButtonElement) {
+				return this.validateButton(element.parentElement);
+			}
+			element = element.parentElement;
+			limit--;
+		}
+
 		return false;
 	}
 
