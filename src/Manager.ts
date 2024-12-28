@@ -67,8 +67,9 @@ export class Manager {
 	private handlers = [];
 	private disabledEvents = [];
 	private activeEvents: IEvent[];
+	private extraPayload: object = {};
 
-	constructor(remote: Remote, { eventsToInclude = [], eventsToExclude = [], source, redirectUrl, shouldRedirect, debug = false }: IOptions) {
+	constructor(remote: Remote, { eventsToInclude = [], eventsToExclude = [], source, redirectUrl, shouldRedirect, extraPayload, debug = false }: IOptions) {
 		this.logger = new Logger(debug);
 
 		this.remote = remote;
@@ -81,6 +82,7 @@ export class Manager {
 		this.source = source;
 		this.redirectUrl = redirectUrl;
 		this.shouldRedirect = shouldRedirect;
+		this.extraPayload = extraPayload;
 
 		if (this.campaignInfo?.download_type) {
 			this.checkDownload().then(() => {
@@ -255,6 +257,7 @@ export class Manager {
 			"event": activeEvent.name.toLowerCase(),
 			"sg_event_id": createUUID(),
 			"sg_message_id": this.campaignInfo.ats_instance_id,
+			...this.extraPayload,
 		};
 	}
 

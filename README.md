@@ -53,6 +53,7 @@ Before running the plugin, make sure you get an api key from our support team.
 | **redirectUrl**     | `string`   | Set the redirect url after affecting events have been triggered. The default value is `https://tips.attacksimulator.com`. |
 | **source**          | `string`   | Set the source of the events. Supported values are `LP` or `LP_EDU`. The default value is `LP`.                           |
 | **url**             | `string`   | The destination url that the events should be sent at                                                                     |
+| **extraPayload**    | `object`   | An object with extra data to be sent with the events.                                                                     |
 
 ## Available events
 

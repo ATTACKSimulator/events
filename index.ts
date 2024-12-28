@@ -11,6 +11,7 @@ const defaultOptions: IOptions = {
 	redirectUrl: `https://oops.${removeSubdomain(window.location.hostname)}`,
 	source: "LP",
 	url: "https://api.attacksimulator.com/v0/client-events",
+	extraPayload: {},
 };
 
 class ATSEvents {

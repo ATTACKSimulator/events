@@ -7,4 +7,5 @@ export default interface IOptions {
 	shouldRedirect: boolean,
 	source: string,
 	url: string,
+	extraPayload: object,
 }
