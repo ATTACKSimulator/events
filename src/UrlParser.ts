@@ -12,7 +12,7 @@ export class UrlParser {
 	public readonly hash: string;
 	public readonly search: string;
 
-	constructor(private url:string) {
+	constructor(url:string) {
 		const parser = document.createElement("a");
 		parser.href = url;
 
