@@ -21,7 +21,7 @@ export default class Click extends ATSEvent implements IEvent {
 		return true;
 	}
 	get isBlocking(): boolean {
-		return false;
+		return true;
 	}
 	get allowMultiple(): boolean {
 		return false; 
