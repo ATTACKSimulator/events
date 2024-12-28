@@ -1,13 +1,12 @@
 import { BrowserInfo, findBrowserInfo } from "./BrowserInfo";
-import { CampaignInfo, findCampaignInfo } from "./CampaignInfo";
+import { findCampaignInfo } from "./CampaignInfo";
 import { createUUID, debounce } from "./Tools"; 
 
 import AttachmentOpen from "./events/AttachmentOpen";
 import Click from "./events/Click";
 import Download from "./events/Download";
 import Extension from "./events/Extension";
-import FileDownload from "./events/FileDownload";
-import FileOpen from "./events/FileOpen";
+import FileDownload from "./events/FileDownload";import FileOpen from "./events/FileOpen";
 import Input from "./events/Input";
 import Microphone from "./events/Microphone";
 import Notification from "./events/Notification";
@@ -26,14 +25,14 @@ import Remote from "./Remote";
 
 import Logger from "./Logger";
 import IOptions from "./intefaces/IOption";
+import ICampaignInfo from "./intefaces/ICampaignInfo";
 
 interface EventSubscription {
 	eventName: string;
 	callback: (event: IEvent) => void;
 }
 
-export class Manager {
-	private readonly supportedTypes : string[] = ["email", "password", "tel", "text", "given-name", "name", "family-name", "street-address", "cc-name", "cc-given-name", "cc-family-name", "cc-number", "cc-exp", "cc-exp-month", "cc-exp-year", "cc-csc", "cc-type"];
+export class Manager {	private readonly supportedTypes : string[] = ["email", "password", "tel", "text", "given-name", "name", "family-name", "street-address", "cc-name", "cc-given-name", "cc-family-name", "cc-number", "cc-exp", "cc-exp-month", "cc-exp-year", "cc-csc", "cc-type"];
 	private readonly supportedEvents = {
 		"attachment_opened": AttachmentOpen,
 		"button_clicked": Click,
@@ -53,7 +52,7 @@ export class Manager {
 		"clipboard_accepted": Clipboard,
 	};
 	private readonly browserInfo: BrowserInfo;
-	private readonly campaignInfo: CampaignInfo;
+	private readonly campaignInfo: ICampaignInfo;
 	private readonly redirectUrl: string;
 	private readonly shouldRedirect: boolean;
 	private readonly remote: Remote;
@@ -90,8 +89,7 @@ export class Manager {
 		}
 	}
 
-	/**
-	 * Decides which events should be active based on the provided lists of events to include and exclude.
+	/**	 * Decides which events should be active based on the provided lists of events to include and exclude.
 	 *
 	 * @param {string[]} eventsToInclude - The list of event names to include.
 	 * @param {string[]} eventsToExclude - The list of event names to exclude.
