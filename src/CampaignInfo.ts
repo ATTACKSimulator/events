@@ -1,7 +1,14 @@
 import { UrlParser } from "./UrlParser";
 import ICampaignInfo from "./intefaces/ICampaignInfo";
 
-function readTokenString(tokenString ?: string, fileType ?: string): CampaignInfo {
+/**
+ * Reads and decodes a token string to extract campaign information.
+ *
+ * @param {string} [tokenString] - The token string to be decoded.
+ * @param {string} [fileType] - The type of file associated with the campaign.
+ * @returns {ICampaignInfo} - The decoded campaign information.
+ */
+function readTokenString(tokenString ?: string, fileType ?: string): ICampaignInfo {
 	const base64Url = tokenString.split(".")[1];
 	const base64 =  base64Url.replace(/-/g, "+").replace(/_/g, "/");
 	const campaignInfo = JSON.parse(window.atob(base64)).payload as ICampaignInfo;
@@ -15,6 +22,12 @@ function readTokenString(tokenString ?: string, fileType ?: string): CampaignInf
 	return campaignInfo;
 }
 
+/**
+ * Finds and returns the campaign information from the URL.
+ *
+ * @returns {[string, ICampaignInfo]} - A tuple containing the token string and the decoded campaign information.
+ * @throws {Error} - Throws an error if the ATTACK Simulator token is missing.
+ */
 export function findCampaignInfo() : [string, ICampaignInfo] {
 	const url = new UrlParser(window.location.href);
 	const tokenString = url.findParam("tk");

@@ -18,7 +18,13 @@ const secondTLDs = "com|edu|gov|net|mil|org|nom|sch|caa|res|off|gob|int|tur|ip6|
 
 const knownSubdomains = "www|studio|mail|remote|blog|webmail|server|ns1|ns2|smtp|secure|vpn|m|shop|ftp|mail2|test|portal|ns|ww1|host|support|dev|web|bbs|ww42|squatter|mx|email|1|mail1|2|forum|owa|www2|gw|admin|store|mx1|cdn|api|exchange|app|gov|2tty|vps|govyty|hgfgdf|news|1rer|lkjkui";
 
-export function removeSubdomain(s: string) {
+/**
+ * Removes the subdomain from the given string, if it matches any known subdomains.
+ *
+ * @param {string} s - The string from which to remove the subdomain.
+ * @returns {string} - The string without the subdomain.
+ */
+export function removeSubdomain(s: string): string {
 	const knownSubdomainsRegExp = new RegExp(`^(${knownSubdomains}).`, "i");
 	s = s.replace(knownSubdomainsRegExp, "");
 
@@ -36,6 +42,14 @@ export function removeSubdomain(s: string) {
 }
 
 const timeouts = {};
+/**
+ * Debounce a function, ensuring it is only called after a specified wait time has elapsed since the last call.
+ *
+ * @template Args - The type of arguments the callback function accepts.
+ * @param {(...args: Args) => void} callback - The function to debounce.
+ * @param {number} wait - The number of milliseconds to wait before invoking the callback.
+ * @param {...Args} args - The arguments to pass to the callback function.
+ */
 export function debounce<Args extends any[]>(callback: (...args: Args) => void, wait: number, ...args: Args) : void {
 	const [, event] = args;
 	

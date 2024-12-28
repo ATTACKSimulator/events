@@ -12,6 +12,12 @@ export default class Remote {
 	}
 
 	public post(data: IEventPayload): Promise<object> {
+	/**
+	 * Sends a POST request with the specified data to the configured URL.
+	 *
+	 * @param {IEventPayload} data - The data to be sent in the POST request.
+	 * @returns {Promise<object|string>} - A promise that resolves to the response data, either as an object if the response is JSON, or as a string otherwise.
+	 */
 		if (this.debug) {
 			console.log(`Sending event to ${this.url} with data:`);
 			console.table(data);
