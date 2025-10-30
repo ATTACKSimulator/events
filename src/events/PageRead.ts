@@ -52,10 +52,14 @@ export default class PageRead extends ATSEvent implements IEvent {
 
 	private enable() {
 		window.onscroll = () => this.scrolled();
-		this.detectFocus();
-		this.detectVisibility();
-		this.scrolled();
-		this.timeout = setTimeout (() => this.stayed(), this.minStaySeconds);
+		if ((window as any).isManualTrigger) {
+			window.addEventListener("manual_page_read", this.stayed);
+		} else {
+			this.detectFocus();
+			this.detectVisibility();
+			this.scrolled();
+			this.timeout = setTimeout (this.stayed, this.minStaySeconds);
+		}
 	}
 
 	private get visibilityProps() : [string, string] {
@@ -75,15 +79,15 @@ export default class PageRead extends ATSEvent implements IEvent {
 	}
 
 	private detectFocus() {
-		window.addEventListener("focus", this.focusGranted.bind(this));
-		window.addEventListener("blur", this.focusLost.bind(this));
+		window.addEventListener("focus", this.focusGranted);
+		window.addEventListener("blur", this.focusLost);
 	}
 
 	private detectVisibility() {
 		// check the visiblility of the page
 		try {
 			const [visibilityChange] = this.visibilityProps;
-			document.addEventListener(visibilityChange, this.visibilityChanged.bind(this));
+			document.addEventListener(visibilityChange, this.visibilityChanged);
 		} catch(_) {
 			//
 			return;
@@ -94,23 +98,23 @@ export default class PageRead extends ATSEvent implements IEvent {
 		// check the visiblility of the page
 		try {
 			const [visibilityChange] = this.visibilityProps;
-			document.removeEventListener(visibilityChange, this.visibilityChanged.bind(this));
+			document.removeEventListener(visibilityChange, this.visibilityChanged);
 		} catch(_) {
 			//
 			return;
 		}
 	}
 
-	private visibilityChanged() {
+	private visibilityChanged = () => {
 		const [_, visibilityState] = this.visibilityProps;
 		this.toggleTimer(document[visibilityState] === "visible");
 	}
 
-	private focusGranted() {
+	private focusGranted = () => {
 		this.toggleTimer(true);
 	}
 
-	private focusLost() {
+	private focusLost = () => {
 		this.toggleTimer(false);
 	}
 
@@ -118,7 +122,7 @@ export default class PageRead extends ATSEvent implements IEvent {
 		if (this.hasStayed) { return; }
 
 		if(status) {
-			this.timeout = setTimeout (() => this.stayed(), this.minStaySeconds);
+			this.timeout = setTimeout(this.stayed, this.minStaySeconds);
 		} else {
 			clearTimeout(this.timeout);
 		}
@@ -127,8 +131,9 @@ export default class PageRead extends ATSEvent implements IEvent {
 	private disable() {
 		window.onscroll = null;
 		this.stopDetectingVisibility();
-		window.removeEventListener("focus", this.focusGranted.bind(this));
-		window.removeEventListener("blur", this.focusLost.bind(this));
+		window.removeEventListener("focus", this.focusGranted);
+		window.removeEventListener("blur", this.focusLost);
+		window.removeEventListener("manual_page_read", this.stayed);
 	}
 
 	private getScrollPercent() {
@@ -144,7 +149,7 @@ export default class PageRead extends ATSEvent implements IEvent {
 		}
 	}
 
-	private stayed() {
+	private stayed = () => {
 		if(this.hasScrolled || !this.canScroll) {
 			this.dispatch();
 		}
