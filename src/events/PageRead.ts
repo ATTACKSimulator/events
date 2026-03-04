@@ -3,17 +3,17 @@ import ATSEvent from "./ATSEvent";
 
 export default class PageRead extends ATSEvent implements IEvent {
 	private minScrollPercentage = 70;
-	private minStaySeconds = 2*1000;
+	private minStaySeconds = 2 * 1000;
 	private hasScrolled = false;
 	private hasStayed = false;
 	private customEvent: Event;
 	private timeout: any;
+	private manualStayed = () => this.stayed(true);
 
 	constructor() {
 		super();
 		this.customEvent = new Event(this.trigger);
 		this.enable();
-		console.log("Page read enabled");
 	}
 
 	get shouldDebounce(): boolean {
@@ -43,7 +43,7 @@ export default class PageRead extends ATSEvent implements IEvent {
 
 	get canScroll(): boolean {
 		// determine if the user can scroll the page
-		return window.innerHeight / document.documentElement.scrollHeight < .85;
+		return window.innerHeight / document.documentElement.scrollHeight < 0.85;
 	}
 
 	isValid(): boolean {
@@ -53,26 +53,23 @@ export default class PageRead extends ATSEvent implements IEvent {
 	private enable() {
 		window.onscroll = () => this.scrolled();
 		if ((window as any).isManualTrigger) {
-			window.addEventListener("manual_page_read", this.stayed);
+			window.addEventListener("manual_page_read", this.manualStayed);
 		} else {
 			this.detectFocus();
 			this.detectVisibility();
 			this.scrolled();
-			this.timeout = setTimeout (this.stayed, this.minStaySeconds);
-		}
+			this.timeout = setTimeout(this.stayed, this.minStaySeconds);
+		} 
 	}
 
-	private get visibilityProps() : [string, string] {
+	private get visibilityProps(): [string, string] {
 		if (typeof document.hidden !== "undefined") {
 			return ["visibilitychange", "visibilityState"];
-		}
-		else if (typeof (document as any).mozHidden !== "undefined") {
+		} else if (typeof (document as any).mozHidden !== "undefined") {
 			return ["mozvisibilitychange", "mozVisibilityState"];
-		}
-		else if (typeof (document as any).msHidden !== "undefined") {
+		} else if (typeof (document as any).msHidden !== "undefined") {
 			return ["msvisibilitychange", "msVisibilityState"];
-		}
-		else if (typeof (document as any).webkitHidden !== "undefined") {
+		} else if (typeof (document as any).webkitHidden !== "undefined") {
 			return ["webkitvisibilitychange", "webkitVisibilityState"];
 		}
 		throw new Error("Visibility not supported.");
@@ -88,7 +85,7 @@ export default class PageRead extends ATSEvent implements IEvent {
 		try {
 			const [visibilityChange] = this.visibilityProps;
 			document.addEventListener(visibilityChange, this.visibilityChanged);
-		} catch(_) {
+		} catch (_) {
 			//
 			return;
 		}
@@ -99,7 +96,7 @@ export default class PageRead extends ATSEvent implements IEvent {
 		try {
 			const [visibilityChange] = this.visibilityProps;
 			document.removeEventListener(visibilityChange, this.visibilityChanged);
-		} catch(_) {
+		} catch (_) {
 			//
 			return;
 		}
@@ -108,20 +105,22 @@ export default class PageRead extends ATSEvent implements IEvent {
 	private visibilityChanged = () => {
 		const [_, visibilityState] = this.visibilityProps;
 		this.toggleTimer(document[visibilityState] === "visible");
-	}
+	};
 
 	private focusGranted = () => {
 		this.toggleTimer(true);
-	}
+	};
 
 	private focusLost = () => {
 		this.toggleTimer(false);
-	}
+	};
 
 	private toggleTimer(status: boolean) {
-		if (this.hasStayed) { return; }
+		if (this.hasStayed) {
+			return;
+		}
 
-		if(status) {
+		if (status) {
 			this.timeout = setTimeout(this.stayed, this.minStaySeconds);
 		} else {
 			clearTimeout(this.timeout);
@@ -133,28 +132,33 @@ export default class PageRead extends ATSEvent implements IEvent {
 		this.stopDetectingVisibility();
 		window.removeEventListener("focus", this.focusGranted);
 		window.removeEventListener("blur", this.focusLost);
-		window.removeEventListener("manual_page_read", this.stayed);
+		window.removeEventListener("manual_page_read", this.manualStayed);
 	}
 
 	private getScrollPercent() {
-		return ((document.documentElement.scrollTop + document.body.scrollTop) / (document.documentElement.scrollHeight - document.documentElement.clientHeight) * 100);
+		return (
+			((document.documentElement.scrollTop + document.body.scrollTop) /
+        (document.documentElement.scrollHeight -
+          document.documentElement.clientHeight)) *
+      100
+		);
 	}
 
 	private scrolled() {
-		if(this.getScrollPercent() > this.minScrollPercentage) {
-			if(this.hasStayed) {
+		if (this.getScrollPercent() > this.minScrollPercentage) {
+			if (this.hasStayed) {
 				this.dispatch();
 			}
 			this.hasScrolled = true;
 		}
 	}
 
-	private stayed = () => {
-		if(this.hasScrolled || !this.canScroll) {
+	private stayed = (force = false) => {
+		if (force || this.hasScrolled || !this.canScroll) {
 			this.dispatch();
 		}
 		this.hasStayed = true;
-	}
+	};
 
 	private dispatch() {
 		window.dispatchEvent(this.customEvent);
