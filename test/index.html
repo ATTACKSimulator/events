@@ -1,67 +1,77 @@
-<!DOCTYPE html>
+<!doctype html>
 <html lang="en">
-
-<head>
-    <meta charset="UTF-8">
-    <meta http-equiv="X-UA-Compatible" content="IE=edge">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <head>
+    <meta charset="UTF-8" />
+    <meta http-equiv="X-UA-Compatible" content="IE=edge" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>Test ATS Events</title>
+    <script>
+      window.isManualTrigger = true;
+    </script>
     <script src="../dist/bundle.js"></script>
     <style>
-        .spacer {
-            height: 100vh;
-        }
+      .spacer {
+        height: 100vh;
+      }
     </style>
-</head>
+  </head>
 
-<body>
-<form>
-    <input type="text" placeholder="type your name here">
-    <input type="email" placeholder="type your email here">
-    <input type="password" placeholder="type your password here">
-    <input type="password" autocomplete="cc-number" placeholder="type your cc here">
-    
-    <button type="submit">Send</button>
-</form>
-<a href="https://google.com">Click me!</a>
-<a onclick="clicked()" href="https://google.com">Click to download!</a>
-<p>Scroll down</p>
-<div class="spacer"></div>
-<p>End of page</p>
-</body>
-<script>
-	const atsEvents = new ATSEvents({ "apiKey": "***REMOVED***", "debug": true, "shouldRedirect": false, "url": "http://localhost:3000/v0/client-events", "eventsToInclude": ["page_loaded", "page_left", "input_filled"] });
-	atsEvents.listen();
-    
+  <body>
+    <form>
+      <input type="text" placeholder="type your name here" />
+      <input type="email" placeholder="type your email here" />
+      <input type="password" placeholder="type your password here" />
+      <input
+        type="password"
+        autocomplete="cc-number"
+        placeholder="type your cc here"
+      />
+
+      <button type="submit">Send</button>
+    </form>
+    <a href="https://google.com">Click me!</a>
+    <a onclick="clicked()" href="https://google.com">Click to download!</a>
+    <p>Scroll down</p>
+    <div class="spacer"></div>
+    <p>End of page</p>
+  </body>
+  <script>
+    const atsEvents = new ATSEvents({
+      apiKey: "test",
+      debug: true,
+      shouldRedirect: false,
+      url: "http://localhost:3000/v0/client-events",
+      eventsToInclude: ["page_loaded", "page_read", "input_filled"],
+    });
+    atsEvents.listen();
+
     atsEvents.on("page_loaded", (event) => {
-        console.log(event);
-    })
+      console.log(event);
+    });
 
-	setTimeout(() => {
-		atsEvents.trigger("button_clicked")
+    setTimeout(() => {
+      atsEvents
+        .trigger("button_clicked")
         .then(() => {
-            console.log("click event sent");
+          console.log("click event sent");
         })
         .catch(() => {
-            console.error("something bad happened");
-        })
-	}, 2000);
+          console.error("something bad happened");
+        });
+    }, 2000);
 
     async function clicked() {
-        try {
-            await atsEvents.trigger("file_download");
-            
-        } catch (e) {
-            console.error(e);
-        }
+      try {
+        await atsEvents.trigger("file_download");
+      } catch (e) {
+        console.error(e);
+      }
 
-        try {
-            await atsEvents.trigger("page_left");
-        } catch (e) {
-            console.error(e);
-        }
+      try {
+        await atsEvents.trigger("page_left");
+      } catch (e) {
+        console.error(e);
+      }
     }
-
-</script>
-
+  </script>
 </html>
