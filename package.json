@@ -6,7 +6,7 @@
   },
   "version": "1.2.13",
   "description": "This package can be used to enable events collection on a landing page and send them back to ATTACK Simulator.",
-  "main": "dist/events.js",
+  "main": "dist/bundle.js",
   "scripts": {
     "lint": "eslint . --ext .ts",
     "build": "webpack",

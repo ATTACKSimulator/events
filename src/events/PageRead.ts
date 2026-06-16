@@ -53,13 +53,14 @@ export default class PageRead extends ATSEvent implements IEvent {
 	private enable() {
 		window.onscroll = () => this.scrolled();
 		if ((window as any).isManualTrigger) {
+			console.log("Manual trigger enabled for page read event.");
 			window.addEventListener("manual_page_read", this.manualStayed);
 		} else {
 			this.detectFocus();
 			this.detectVisibility();
 			this.scrolled();
 			this.timeout = setTimeout(this.stayed, this.minStaySeconds);
-		} 
+		}
 	}
 
 	private get visibilityProps(): [string, string] {
