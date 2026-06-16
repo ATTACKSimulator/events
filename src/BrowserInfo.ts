@@ -1,6 +1,6 @@
 import parser from "ua-parser-js";
 
-const IP_INFO_URL = "https://ipinfo.io/json";
+const IP_INFO_URL = "https://ipinfo.io/ip";
 const IP_LOOKUP_TIMEOUT = 1500;
 
 interface ScreenSize {
@@ -27,10 +27,6 @@ interface Device {
 }
 interface Cpu {
     architecture ?:string
-}
-
-interface IpInfoResponse {
-    ip?: string
 }
 
 export interface BrowserInfo {
@@ -149,8 +145,8 @@ async function findClientIp(): Promise<string | undefined> {
 				return undefined;
 			}
 
-			const {ip} = await response.json() as IpInfoResponse;
-			return typeof ip === "string" ? ip.trim() || undefined : undefined;
+			const ip = await response.text();
+			return ip.trim() || undefined;
 		} finally {
 			window.clearTimeout(timeout);
 		}
