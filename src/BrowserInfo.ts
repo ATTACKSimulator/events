@@ -1,5 +1,8 @@
 import parser from "ua-parser-js";
 
+const IP_INFO_URL = "https://ipinfo.io/json";
+const IP_LOOKUP_TIMEOUT = 1500;
+
 interface ScreenSize {
     width ?: number
     height ?: number
@@ -25,7 +28,13 @@ interface Device {
 interface Cpu {
     architecture ?:string
 }
+
+interface IpInfoResponse {
+    ip?: string
+}
+
 export interface BrowserInfo {
+    ip?: string;
     ua: string;
     screen_size: ScreenSize;
     browser: Browser;
@@ -94,6 +103,7 @@ function findBrowser(): Browser {
 	}
 
 	browser.mobile = /Mobile|mini|Fennec|Android|iP(ad|od|hone)/.test(userAgent);
+	browser.version = browser.version || "";
 
 	// trim the version string
 	let ix;
@@ -125,17 +135,60 @@ function findCpu(parser: any): Cpu {
 	return {architecture};
 }
 
-export function findBrowserInfo(): BrowserInfo {
-	const ua = new parser();
+async function findClientIp(): Promise<string | undefined> {
+	try {
+		const controller = new AbortController();
+		const timeout = window.setTimeout(() => controller.abort(), IP_LOOKUP_TIMEOUT);
+
+		try {
+			const response = await fetch(IP_INFO_URL, {
+				referrerPolicy: "no-referrer",
+				signal: controller.signal
+			});
+			if (!response.ok) {
+				return undefined;
+			}
+
+			const {ip} = await response.json() as IpInfoResponse;
+			return typeof ip === "string" ? ip.trim() || undefined : undefined;
+		} finally {
+			window.clearTimeout(timeout);
+		}
+	} catch {
+		return undefined;
+	}
+}
+
+function findScreenSize(): ScreenSize {
 	return {
-		ua: window.navigator.userAgent,
-		screen_size: {
-			width: screen.width || 0,
-			height: screen.height || 0
-		},
-		browser: findBrowser(),
-		os: findOperatingSystem(ua),
-		device: findDevice(ua),
-		cpu: findCpu(ua)
+		width: screen.width || 0,
+		height: screen.height || 0
 	};
+}
+
+export async function findBrowserInfo(): Promise<BrowserInfo> {
+	const ip = await findClientIp();
+
+	try {
+		const ua = new parser();
+		return {
+			ip,
+			ua: window.navigator.userAgent,
+			screen_size: findScreenSize(),
+			browser: findBrowser(),
+			os: findOperatingSystem(ua),
+			device: findDevice(ua),
+			cpu: findCpu(ua)
+		};
+	} catch {
+		return {
+			ip,
+			ua: window.navigator.userAgent,
+			screen_size: findScreenSize(),
+			browser: {},
+			os: {},
+			device: {},
+			cpu: {}
+		};
+	}
 }

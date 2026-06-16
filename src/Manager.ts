@@ -53,7 +53,7 @@ export class Manager {
 		"location_accepted": Location,
 		"clipboard_accepted": Clipboard,
 	};
-	private readonly browserInfo: BrowserInfo;
+	private readonly browserInfoPromise: Promise<BrowserInfo>;
 	private readonly campaignInfo: ICampaignInfo;
 	private readonly redirectUrl: string;
 	private readonly shouldRedirect: boolean;
@@ -74,7 +74,7 @@ export class Manager {
 
 		this.remote = remote;
 		[this.token, this.campaignInfo] = findCampaignInfo();
-		this.browserInfo = findBrowserInfo();
+		this.browserInfoPromise = findBrowserInfo();
 
 		this.activeEvents = this.decideActiveEvents(eventsToInclude, eventsToExclude);
 		this.logger.info(`Enabled events: ${eventsToInclude.join(" | ")}`);
@@ -243,12 +243,13 @@ export class Manager {
 	 *
 	 * @param {string} type - The type of the event.
 	 * @param {IEvent} activeEvent - The active event to be packed.
+	 * @param {BrowserInfo} browserInfo - The resolved browser information.
 	 * @returns {IEventPayload} - The packed event payload.
 	 */
-	private packEvent(type: string, activeEvent: IEvent): IEventPayload {
+	private packEvent(type: string, activeEvent: IEvent, browserInfo: BrowserInfo): IEventPayload {
 		return {
 			"data": {
-				...this.browserInfo,
+				...browserInfo,
 				type,
 			},
 			"source": this.source,
@@ -313,14 +314,14 @@ export class Manager {
 	 * @param {boolean} [shouldValidate=true] - Whether to validate the event before executing it.
 	 * @returns {Promise<void>} - A promise that resolves when the event is executed.
 	 */
-	private executeEvent(activeEvent: IEvent, event?: Event, shouldValidate = true): Promise<void> {
+	private async executeEvent(activeEvent: IEvent, event?: Event, shouldValidate = true): Promise<void> {
 		this.logger.info(`Event @${activeEvent.trigger} (${activeEvent.name}) triggered...`);
 
 		try {
 			this.checkEvent(activeEvent, event, shouldValidate);
 		} catch (e) {
 			this.logger.error(e);
-			return new Promise((resolve, reject) => reject(e));
+			throw e;
 		}
 
 		if (event && activeEvent.isBlocking) {
@@ -333,21 +334,24 @@ export class Manager {
 			this.checkMultiple(activeEvent, event);
 		} catch(e) {
 			this.logger.error(e);
-			return new Promise((resolve, reject) => reject(e));
+			throw e;
 		}
 
 		const type = this.findType(activeEvent, event);
-		const payload = this.packEvent(type, activeEvent);
 		this.triggerSubscription(activeEvent);
 
-		return this.remote.post(payload)
-			.then(result => this.logger.info(result))
-			.catch(e => this.logger.error(e))
-			.finally(() => {
-				if (activeEvent.redirectOnFinish && this.shouldRedirect) {
-					window.location.href = `${this.redirectUrl}${window.location.search}`;
-				}
-			});		
+		try {
+			const browserInfo = await this.browserInfoPromise;
+			const payload = this.packEvent(type, activeEvent, browserInfo);
+			const result = await this.remote.post(payload);
+			this.logger.info(result);
+		} catch (e) {
+			this.logger.error(e);
+		} finally {
+			if (activeEvent.redirectOnFinish && this.shouldRedirect) {
+				window.location.href = `${this.redirectUrl}${window.location.search}`;
+			}
+		}
 	}
 
 	get supportedEventNames(): string[] {
