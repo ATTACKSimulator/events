@@ -16,9 +16,6 @@ export default class PageRead extends ATSEvent implements IEvent {
 		this.enable();
 	}
 
-	get shouldDebounce(): boolean {
-		return false;
-	}
 	get trigger(): string {
 		return "page_read";
 	}

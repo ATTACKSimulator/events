@@ -2,9 +2,6 @@ import IEvent from "../intefaces/IEvent";
 import ATSEvent from "./ATSEvent";
 
 export default class Input extends ATSEvent implements IEvent {
-	get shouldDebounce(): boolean {
-		return false;
-	}
 	get shouldDedup(): boolean {
 		return true;
 	}

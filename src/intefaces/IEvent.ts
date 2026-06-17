@@ -1,5 +1,4 @@
 type IEvent = {
-	readonly shouldDebounce: boolean;
 	readonly shouldDedup: boolean;
 	readonly trigger: string | null;
 	// the name of the event to be sent to the server

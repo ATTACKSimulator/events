@@ -1,6 +1,5 @@
 import { BrowserInfo, findBrowserInfo } from "./BrowserInfo";
 import { findCampaignInfo } from "./CampaignInfo";
-import { createUUID } from "./Tools";
 
 import AttachmentOpen from "./events/AttachmentOpen";
 import Click from "./events/Click";
@@ -21,9 +20,10 @@ import Clipboard from "./events/Clipboard";
 
 import IEvent from "./intefaces/IEvent";
 
-import IEventPayload from "./intefaces/IEventPayload";
+import { IEventPayloadDraft } from "./intefaces/IEventPayload";
 import Remote from "./Remote";
 
+import EventSender from "./EventSender";
 import Logger from "./Logger";
 import IOptions from "./intefaces/IOption";
 import ICampaignInfo from "./intefaces/ICampaignInfo";
@@ -57,7 +57,7 @@ export class Manager {
 	private readonly campaignInfo: ICampaignInfo;
 	private readonly redirectUrl: string;
 	private readonly shouldRedirect: boolean;
-	private readonly remote: Remote;
+	private readonly sender: EventSender;
 	private readonly source: string;
 	private readonly token: string;
 
@@ -72,7 +72,7 @@ export class Manager {
 	constructor(remote: Remote, { eventsToInclude = [], eventsToExclude = [], source, redirectUrl, shouldRedirect, extraPayload, debug = false }: IOptions) {
 		this.logger = new Logger(debug);
 
-		this.remote = remote;
+		this.sender = new EventSender(remote, this.logger);
 		[this.token, this.campaignInfo] = findCampaignInfo();
 		this.browserInfoPromise = findBrowserInfo();
 
@@ -225,14 +225,14 @@ export class Manager {
 	}
 
 	/**
-	 * Packs the event data into an `IEventPayload` object.
+	 * Packs the event data into an `IEventPayloadDraft` object.
 	 *
 	 * @param {string} type - The type of the event.
 	 * @param {IEvent} activeEvent - The active event to be packed.
 	 * @param {BrowserInfo} browserInfo - The resolved browser information.
-	 * @returns {IEventPayload} - The packed event payload.
+	 * @returns {IEventPayloadDraft} - The packed event payload.
 	 */
-	private packEvent(type: string, activeEvent: IEvent, browserInfo: BrowserInfo): IEventPayload {
+	private packEvent(type: string, activeEvent: IEvent, browserInfo: BrowserInfo): IEventPayloadDraft {
 		return {
 			"data": {
 				...browserInfo,
@@ -242,7 +242,6 @@ export class Manager {
 			"timestamp": Math.floor(Date.now() / 1000),
 			"ats_header": this.token,
 			"event": activeEvent.name.toLowerCase(),
-			"sg_event_id": createUUID(),
 			"sg_message_id": this.campaignInfo.ats_instance_id,
 			...this.extraPayload,
 		};
@@ -348,8 +347,12 @@ export class Manager {
 		try {
 			const browserInfo = await this.browserInfoPromise;
 			const payload = this.packEvent(type, activeEvent, browserInfo);
-			const result = await this.remote.post(payload);
-			this.logger.info(result);
+			const result = await this.sender.send(payload, {
+				maxAttempts: activeEvent.redirectOnFinish && this.shouldRedirect ? 1 : undefined,
+			});
+			if (result) {
+				this.logger.info(result.body);
+			}
 		} catch (e) {
 			this.logger.error(e);
 		} finally {

@@ -2,9 +2,6 @@ import IEvent from "../intefaces/IEvent";
 import ATSEvent from "./ATSEvent";
 
 export default class FileDownload extends ATSEvent implements IEvent {
-	get shouldDebounce(): boolean {
-		return false;
-	}
 	get trigger(): null {
 		return null;
 	}
@@ -51,4 +48,4 @@ export default class FileDownload extends ATSEvent implements IEvent {
 			
 		return true;
 	}
-} 
+}

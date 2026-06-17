@@ -10,4 +10,8 @@ type IEventPayload = {
 	sg_message_id: string;
 };
 
+export type IEventPayloadDraft = Omit<IEventPayload, "sg_event_id"> & {
+	sg_event_id?: string;
+};
+
 export default IEventPayload;
