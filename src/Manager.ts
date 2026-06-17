@@ -1,6 +1,6 @@
 import { BrowserInfo, findBrowserInfo } from "./BrowserInfo";
 import { findCampaignInfo } from "./CampaignInfo";
-import { createUUID, debounce } from "./Tools"; 
+import { createUUID } from "./Tools";
 
 import AttachmentOpen from "./events/AttachmentOpen";
 import Click from "./events/Click";
@@ -150,7 +150,7 @@ export class Manager {
 				this.logger.info(`The active event ${activeEvent.name} does not have a trigger. Skipping...`);
 			} else {
 				this.logger.info(`Listening for event @${activeEvent.trigger} (${activeEvent.name})`);
-				activeEvent.source.addEventListener(activeEvent.trigger, this.handlers[i++] = (event: Event) => this.prehandle(activeEvent, event));
+				activeEvent.source.addEventListener(activeEvent.trigger, this.handlers[i++] = (event: Event) => this.handle(activeEvent, event));
 			}
 		}
 	}
@@ -183,20 +183,6 @@ export class Manager {
 		}
 
 		return this.executeEvent(activeEvent, null, false);
-	}
-
-	/**
-	 * Pre-handles the event by debouncing it if necessary, otherwise directly handles it.
-	 *
-	 * @param {IEvent} activeEvent - The active event to be pre-handled.
-	 * @param {Event} [event] - The optional event object.
-	 */
-	private prehandle(activeEvent: IEvent, event?: Event) {		
-		if (activeEvent.shouldDebounce) {
-			debounce((...args: [IEvent, Event]) => this.handle(...args), 500, activeEvent, event);
-		} else {
-			this.handle(activeEvent, event);
-		}
 	}
 
 	/**
@@ -306,6 +292,21 @@ export class Manager {
 		}
 	}
 
+	private shouldSkipDedupedEvent(activeEvent: IEvent, event?: Event): boolean {
+		if (!activeEvent.shouldDedup || !event || !(event.target instanceof HTMLElement)) {
+			return false;
+		}
+
+		const attributeName = `data-ats-${activeEvent.name.replace(/_/g, "-")}-recorded`;
+		if (event.target.hasAttribute(attributeName)) {
+			this.logger.info(`Preventing duplicate event @${activeEvent.trigger} (${activeEvent.name}).`);
+			return true;
+		}
+
+		event.target.setAttribute(attributeName, "true");
+		return false;
+	}
+
 	/**
 	 * Executes the active event, optionally validating it first.
 	 *
@@ -335,6 +336,10 @@ export class Manager {
 		} catch(e) {
 			this.logger.error(e);
 			throw e;
+		}
+
+		if (this.shouldSkipDedupedEvent(activeEvent, event)) {
+			return;
 		}
 
 		const type = this.findType(activeEvent, event);

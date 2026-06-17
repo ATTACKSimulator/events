@@ -40,28 +40,3 @@ export function removeSubdomain(s: string): string {
 
 	return parts.join(".");
 }
-
-const timeouts = {};
-/**
- * Debounce a function, ensuring it is only called after a specified wait time has elapsed since the last call.
- *
- * @template Args - The type of arguments the callback function accepts.
- * @param {(...args: Args) => void} callback - The function to debounce.
- * @param {number} wait - The number of milliseconds to wait before invoking the callback.
- * @param {...Args} args - The arguments to pass to the callback function.
- */
-export function debounce<Args extends any[]>(callback: (...args: Args) => void, wait: number, ...args: Args) : void {
-	const [, event] = args;
-	
-	if (! event.target.hasAttribute("data-id")) {
-		event.target.setAttribute("data-id", createUUID());
-	}
-
-	const id = event.target.getAttribute("data-id");
-
-	if (timeouts[id]) {
-		clearTimeout(timeouts[id]);
-	}
-
-	timeouts[id] = setTimeout(callback, wait, ...args);
-}

@@ -1,4 +1,8 @@
 export default class ATSEvent {
+	get shouldDedup(): boolean {
+		return false;
+	}
+
 	basicValidation(element: HTMLElement) {
 		if (element.hasAttribute("data-ignore")) {
 			return false;
