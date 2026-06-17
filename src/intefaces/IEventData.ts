@@ -7,7 +7,7 @@ type IEventData = {
 	cpu?: object;
 	device?: object;
 	ip?: string;
-	ua?: string;
+	useragent?: string;
 };
 
 export default IEventData;

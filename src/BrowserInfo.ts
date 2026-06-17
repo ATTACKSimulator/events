@@ -31,7 +31,7 @@ interface Cpu {
 
 export interface BrowserInfo {
     ip?: string;
-    ua: string;
+    useragent: string;
     screen_size: ScreenSize;
     browser: Browser;
     os: OS;
@@ -169,7 +169,7 @@ export async function findBrowserInfo(): Promise<BrowserInfo> {
 		const ua = new parser();
 		return {
 			ip,
-			ua: window.navigator.userAgent,
+			useragent: window.navigator.userAgent,
 			screen_size: findScreenSize(),
 			browser: findBrowser(),
 			os: findOperatingSystem(ua),
@@ -179,7 +179,7 @@ export async function findBrowserInfo(): Promise<BrowserInfo> {
 	} catch {
 		return {
 			ip,
-			ua: window.navigator.userAgent,
+			useragent: window.navigator.userAgent,
 			screen_size: findScreenSize(),
 			browser: {},
 			os: {},
