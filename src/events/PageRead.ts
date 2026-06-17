@@ -3,7 +3,7 @@ import ATSEvent from "./ATSEvent";
 
 export default class PageRead extends ATSEvent implements IEvent {
 	private minScrollPercentage = 70;
-	private minStaySeconds = 2 * 1000;
+	private minStaySeconds = 30 * 1000;
 	private hasScrolled = false;
 	private hasStayed = false;
 	private customEvent: Event;
