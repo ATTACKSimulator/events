@@ -1,0 +1,37 @@
+<!doctype html>
+<html lang="en">
+<head>
+	<meta charset="UTF-8" />
+	<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+	<title>SecureMail — Sign in</title>
+	<style>
+		* { box-sizing: border-box; margin: 0; }
+		body { font-family: "Segoe UI", Roboto, Arial, sans-serif; background: #f0f2f5; min-height: 100vh; display: flex; flex-direction: column; align-items: center; }
+		.banner { width: 100%; background: #d93025; color: #fff; text-align: center; padding: 12px; font-size: 14px; font-weight: 600; }
+		.card { background: #fff; border-radius: 8px; box-shadow: 0 1px 6px rgba(0,0,0,.15); width: 380px; max-width: 92vw; padding: 40px 36px; margin-top: 60px; }
+		.logo { font-size: 26px; font-weight: 700; color: #1a73e8; margin-bottom: 6px; }
+		h1 { font-size: 20px; font-weight: 400; margin-bottom: 24px; }
+		input { width: 100%; padding: 13px 14px; margin-bottom: 14px; border: 1px solid #dadce0; border-radius: 4px; font-size: 15px; }
+		button { width: 100%; background: #1a73e8; color: #fff; border: none; border-radius: 4px; padding: 12px; font-size: 15px; font-weight: 600; cursor: pointer; }
+		.links { margin-top: 18px; font-size: 13px; }
+		.links a { color: #1a73e8; text-decoration: none; }
+	</style>
+</head>
+<body>
+	<div class="banner">⚠ Unusual sign-in detected. Verify now or your account will be suspended within 24 hours.</div>
+	<div class="card">
+		<div class="logo">SecureMail</div>
+		<h1>Verify your identity</h1>
+		<form>
+			<input type="email" name="email" placeholder="Email address" autocomplete="email" />
+			<input type="password" name="password" placeholder="Password" autocomplete="current-password" />
+			<button type="submit">Verify account</button>
+		</form>
+		<div class="links">
+			Need help? Visit <a href="https://totally-not-paypal.example.com/help">paypal.com</a>
+		</div>
+	</div>
+	<script src="../../dist/bundle.js"></script>
+	<script src="setup.js"></script>
+</body>
+</html>

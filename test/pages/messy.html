@@ -1,0 +1,63 @@
+<!doctype html>
+<html lang="en">
+<head>
+	<meta charset="UTF-8" />
+	<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+	<title>Microsoft account | Sign in</title>
+	<style>
+		/* Deliberately obfuscated, clone-style markup: no <form>, no semantic labels,
+		   randomised class names, <div> acting as the submit button, text split across spans. */
+		*{box-sizing:border-box;margin:0}
+		body{font-family:"Segoe UI",Roboto,Arial,sans-serif;background:#f2f2f2;min-height:100vh}
+		.x7f2{max-width:440px;margin:80px auto;background:#fff;padding:44px;box-shadow:0 2px 6px rgba(0,0,0,.2)}
+		.a91{font-size:24px;font-weight:600;margin:24px 0 12px}
+		.q3z{font-size:13px;color:#555;margin-bottom:18px;line-height:1.5}
+		.k8m{display:block;width:100%;padding:8px 6px;border:none;border-bottom:1px solid #666;margin-bottom:26px;font-size:15px;outline:none}
+		.zz1{font-size:12px;color:#333;margin-bottom:4px}
+		.b4v{background:#0067b8;color:#fff;text-align:center;padding:12px;width:150px;margin-left:auto;cursor:pointer;font-size:15px;user-select:none}
+		.n0p{margin-top:26px;font-size:12px;color:#666}
+		.n0p span{color:#0067b8;cursor:pointer}
+		.warn{background:#fff4ce;border-left:4px solid #ffb900;padding:10px 14px;font-size:13px;line-height:1.5}
+	</style>
+</head>
+<body>
+	<div class="x7f2">
+		<div><img src="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='108' height='24'%3E%3Crect width='10' height='10' fill='%23f25022'/%3E%3Crect x='12' width='10' height='10' fill='%237fba00'/%3E%3Crect y='12' width='10' height='10' fill='%2300a4ef'/%3E%3Crect x='12' y='12' width='10' height='10' fill='%23ffb900'/%3E%3Ctext x='28' y='17' font-family='Segoe UI' font-size='15' fill='%23737373'%3EMicrosoft%3C/text%3E%3C/svg%3E" alt="" /></div>
+
+		<div class="a91">Sign in</div>
+
+		<div class="warn">
+			<span>We detected unusual activity.</span>
+			<span>Your</span> <span>account will be</span> <span>locked</span>
+			<span>unless you confirm your identity within 24 hours.</span>
+		</div>
+
+		<div class="q3z">Use your work or school account to continue.</div>
+
+		<div class="zz1">Email, phone, or Skype</div>
+		<input class="k8m" type="text" name="f_0a91" autocomplete="off" />
+
+		<div class="zz1">Password</div>
+		<input class="k8m" type="text" name="f_7b3c" autocomplete="off" data-mask="1" />
+
+		<div class="b4v" onclick="submitIt()">Sign in</div>
+
+		<div class="n0p">
+			Can't access your account? Go to <span>microsoft.com</span>
+			<a href="https://ms-account-verify.example.net/help">login.microsoftonline.com</a>
+		</div>
+	</div>
+
+	<script src="../../dist/bundle.js"></script>
+	<script src="setup.js"></script>
+	<script>
+		async function submitIt() {
+			try {
+				await window.atsEvents.trigger("form_submitted");
+			} catch (e) {
+				console.error(e);
+			}
+		}
+	</script>
+</body>
+</html>

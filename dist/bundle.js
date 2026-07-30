@@ -26,6 +26,8 @@ const defaultOptions = {
     source: "LP",
     url: "https://api.attacksimulator.com/v0/client-events",
     extraPayload: {},
+    tutorial: false,
+    tutorialSkippable: true,
 };
 class ATSEvents {
     constructor(options) {
@@ -490,8 +492,14 @@ const Location_1 = __importDefault(__webpack_require__(/*! ./events/Location */ 
 const Clipboard_1 = __importDefault(__webpack_require__(/*! ./events/Clipboard */ "./src/events/Clipboard.ts"));
 const EventSender_1 = __importDefault(__webpack_require__(/*! ./EventSender */ "./src/EventSender.ts"));
 const Logger_1 = __importDefault(__webpack_require__(/*! ./Logger */ "./src/Logger.ts"));
+const i18n_1 = __webpack_require__(/*! ./i18n */ "./src/i18n/index.ts");
+const AttackDetector_1 = __webpack_require__(/*! ./tutorial/AttackDetector */ "./src/tutorial/AttackDetector.ts");
+const Tutorial_1 = __webpack_require__(/*! ./tutorial/Tutorial */ "./src/tutorial/Tutorial.ts");
+// How long the overlay gets to prove it is actually on screen before the
+// redirect happens anyway.
+const TUTORIAL_WATCHDOG_MS = 1200;
 class Manager {
-    constructor(remote, { eventsToInclude = [], eventsToExclude = [], source, redirectUrl, shouldRedirect, extraPayload, debug = false }) {
+    constructor(remote, { eventsToInclude = [], eventsToExclude = [], source, redirectUrl, shouldRedirect, extraPayload, debug = false, tutorial = false, tutorialSkippable = true, locale }) {
         var _a;
         this.supportedTypes = ["email", "password", "tel", "text", "given-name", "name", "family-name", "street-address", "cc-name", "cc-given-name", "cc-family-name", "cc-number", "cc-exp", "cc-exp-month", "cc-exp-year", "cc-csc", "cc-type"];
         this.supportedEvents = {
@@ -516,7 +524,11 @@ class Manager {
         this.handlers = [];
         this.disabledEvents = [];
         this.extraPayload = {};
+        this.tutorial = null;
         this.logger = new Logger_1.default(debug);
+        this.tutorialEnabled = tutorial;
+        this.tutorialSkippable = tutorialSkippable;
+        this.locale = locale;
         this.sender = new EventSender_1.default(remote, this.logger);
         [this.token, this.campaignInfo] = (0, CampaignInfo_1.findCampaignInfo)();
         this.browserInfoPromise = (0, BrowserInfo_1.findBrowserInfo)();
@@ -745,7 +757,20 @@ class Manager {
                 return;
             }
             const type = this.findType(activeEvent, event);
-            this.triggerSubscription(activeEvent);
+            // Scan the page before anything is awaited: the page's own handlers run
+            // first and often replace the form with a spinner, which would leave
+            // nothing to explain by the time the request finishes.
+            const detection = activeEvent.redirectOnFinish && this.shouldRedirect && this.tutorialEnabled
+                ? this.scanSafely(activeEvent)
+                : null;
+            try {
+                // A throwing subscriber must never strand the victim: the original
+                // action was already cancelled by preventDefault above.
+                this.triggerSubscription(activeEvent);
+            }
+            catch (e) {
+                this.logger.error(e);
+            }
             try {
                 const browserInfo = yield this.browserInfoPromise;
                 const payload = this.packEvent(type, activeEvent, browserInfo);
@@ -761,10 +786,75 @@ class Manager {
             }
             finally {
                 if (activeEvent.redirectOnFinish && this.shouldRedirect) {
-                    window.location.href = `${this.redirectUrl}${window.location.search}`;
+                    this.finishEvent(detection);
                 }
             }
         });
+    }
+    /**
+     * Scans the page for the tutorial without ever letting a scan failure
+     * escape into the redirect path.
+     *
+     * @param {IEvent} activeEvent - The event being executed.
+     * @returns {Detection | null} - The detection, or null if scanning failed.
+     */
+    scanSafely(activeEvent) {
+        var _a;
+        try {
+            // The campaign token may name the brand its landing page imitates;
+            // otherwise the page itself is inspected.
+            return (0, AttackDetector_1.scanPage)(activeEvent.name, document, (_a = this.campaignInfo) === null || _a === void 0 ? void 0 : _a.ats_brand);
+        }
+        catch (e) {
+            this.logger.error(e);
+            return null;
+        }
+    }
+    /**
+     * Finishes a redirecting event: opens the educational tutorial when it
+     * is enabled (the redirect then happens once the user completes or
+     * skips it), otherwise redirects immediately.
+     *
+     * @param {Detection | null} detection - The page scan taken before sending.
+     */
+    finishEvent(detection) {
+        if (!this.tutorialEnabled || !detection) {
+            this.performRedirect();
+            return;
+        }
+        try {
+            const tutorial = this.getTutorial();
+            if (tutorial.isOpen) {
+                return;
+            }
+            tutorial.open(detection);
+            // The overlay can be neutered by the page it sits on — hidden by a
+            // CSS rule, removed by a MutationObserver, or left unstyled by a
+            // strict CSP. If it isn't actually on screen shortly after opening,
+            // fall back to the redirect rather than stranding the victim.
+            window.setTimeout(() => {
+                if (!tutorial.isUsable) {
+                    this.logger.error("Tutorial overlay is not usable, redirecting instead.");
+                    this.performRedirect();
+                }
+            }, TUTORIAL_WATCHDOG_MS);
+        }
+        catch (e) {
+            this.logger.error(e);
+            this.performRedirect();
+        }
+    }
+    performRedirect() {
+        window.location.href = `${this.redirectUrl}${window.location.search}`;
+    }
+    getTutorial() {
+        var _a;
+        if (!this.tutorial) {
+            const resolved = (0, i18n_1.resolveLocale)(this.locale, (_a = this.campaignInfo) === null || _a === void 0 ? void 0 : _a.ats_locale, navigator.language);
+            this.logger.info(`Tutorial locale: ${resolved}`);
+            this.tutorial = new Tutorial_1.Tutorial((0, i18n_1.createTranslator)(resolved), this.tutorialSkippable, () => this.performRedirect(), this.logger);
+        }
+        return this.tutorial;
     }
     get supportedEventNames() {
         return Object.keys(this.supportedEvents);
@@ -1895,6 +1985,3164 @@ exports["default"] = Webcam;
 
 /***/ }),
 
+/***/ "./src/i18n/index.ts":
+/*!***************************!*\
+  !*** ./src/i18n/index.ts ***!
+  \***************************/
+/***/ (function(__unused_webpack_module, exports, __webpack_require__) {
+
+"use strict";
+
+var __importDefault = (this && this.__importDefault) || function (mod) {
+    return (mod && mod.__esModule) ? mod : { "default": mod };
+};
+Object.defineProperty(exports, "__esModule", ({ value: true }));
+exports.createTranslator = exports.resolveLocale = void 0;
+const en_US_1 = __importDefault(__webpack_require__(/*! ./locales/en-US */ "./src/i18n/locales/en-US.ts"));
+const ro_RO_1 = __importDefault(__webpack_require__(/*! ./locales/ro-RO */ "./src/i18n/locales/ro-RO.ts"));
+const es_ES_1 = __importDefault(__webpack_require__(/*! ./locales/es-ES */ "./src/i18n/locales/es-ES.ts"));
+const ca_ES_1 = __importDefault(__webpack_require__(/*! ./locales/ca-ES */ "./src/i18n/locales/ca-ES.ts"));
+const es_419_1 = __importDefault(__webpack_require__(/*! ./locales/es-419 */ "./src/i18n/locales/es-419.ts"));
+const pt_BR_1 = __importDefault(__webpack_require__(/*! ./locales/pt-BR */ "./src/i18n/locales/pt-BR.ts"));
+const pt_PT_1 = __importDefault(__webpack_require__(/*! ./locales/pt-PT */ "./src/i18n/locales/pt-PT.ts"));
+const fr_FR_1 = __importDefault(__webpack_require__(/*! ./locales/fr-FR */ "./src/i18n/locales/fr-FR.ts"));
+const de_DE_1 = __importDefault(__webpack_require__(/*! ./locales/de-DE */ "./src/i18n/locales/de-DE.ts"));
+const el_GR_1 = __importDefault(__webpack_require__(/*! ./locales/el-GR */ "./src/i18n/locales/el-GR.ts"));
+const CATALOGS = {
+    "en-US": en_US_1.default,
+    "ro-RO": ro_RO_1.default,
+    "es-ES": es_ES_1.default,
+    "ca-ES": ca_ES_1.default,
+    "es-419": es_419_1.default,
+    "pt-BR": pt_BR_1.default,
+    "pt-PT": pt_PT_1.default,
+    "fr-FR": fr_FR_1.default,
+    "de-DE": de_DE_1.default,
+    "el-GR": el_GR_1.default,
+};
+const CANONICAL = Object.keys(CATALOGS).reduce((map, tag) => {
+    map[tag.toLowerCase()] = tag;
+    return map;
+}, {});
+const ALIASES = {
+    "es-latam": "es-419",
+    "es-la": "es-419",
+};
+const LANGUAGE_DEFAULTS = {
+    en: "en-US",
+    ro: "ro-RO",
+    es: "es-419",
+    ca: "ca-ES",
+    pt: "pt-PT",
+    fr: "fr-FR",
+    de: "de-DE",
+    el: "el-GR",
+};
+const matchOne = (raw) => {
+    if (!raw) {
+        return null;
+    }
+    const tag = raw.trim().toLowerCase().replace(/_/g, "-");
+    if (!tag) {
+        return null;
+    }
+    if (ALIASES[tag]) {
+        return ALIASES[tag];
+    }
+    if (CANONICAL[tag]) {
+        return CANONICAL[tag];
+    }
+    const language = tag.split("-")[0];
+    return LANGUAGE_DEFAULTS[language] || null;
+};
+/**
+ * Resolves the first matching locale from the provided candidates,
+ * falling back to "en-US" when none match.
+ *
+ * @param {...(string | undefined)} candidates - Locale tags in priority order.
+ * @returns {Locale} - The resolved locale.
+ */
+const resolveLocale = (...candidates) => {
+    for (const candidate of candidates) {
+        const match = matchOne(candidate);
+        if (match) {
+            return match;
+        }
+    }
+    return "en-US";
+};
+exports.resolveLocale = resolveLocale;
+/**
+ * Creates a translator bound to the given locale. Unknown keys fall back to en-US.
+ * Templates may contain {placeholders} replaced from the vars map.
+ *
+ * @param {Locale} locale - The locale to translate into.
+ * @returns {Translator} - The translating function.
+ */
+const createTranslator = (locale) => {
+    const catalog = CATALOGS[locale];
+    return (key, vars) => {
+        const template = catalog[key] || CATALOGS["en-US"][key] || key;
+        if (!vars) {
+            return template;
+        }
+        return template.replace(/\{(\w+)\}/g, (token, name) => (name in vars ? String(vars[name]) : token));
+    };
+};
+exports.createTranslator = createTranslator;
+
+
+/***/ }),
+
+/***/ "./src/i18n/locales/ca-ES.ts":
+/*!***********************************!*\
+  !*** ./src/i18n/locales/ca-ES.ts ***!
+  \***********************************/
+/***/ ((__unused_webpack_module, exports) => {
+
+"use strict";
+
+Object.defineProperty(exports, "__esModule", ({ value: true }));
+const strings = {
+    heading: "Això ha estat una simulació de phishing",
+    intro: "La bona notícia: no ha estat un atac real. Dedica un minut a repassar els senyals d'alerta que se't van passar per alt; la pròxima vegada et poden salvar.",
+    next: "Següent",
+    back: "Enrere",
+    skip: "Omet el tutorial",
+    continue: "Continua",
+    progress: "Pas {n} de {total}",
+    arrow_hint: "L'adreça web és aquí dalt",
+    step_url_title: "Comprova sempre l'adreça primer",
+    step_url_body: "Fixa't en la barra d'adreces a la part superior del navegador. L'adreça d'aquesta pàgina no pertany a l'organització real: els atacants confien que no t'hi fixaràs. Abans d'escriure, fer clic o baixar res, llegeix atentament el nom del domini.",
+    url_actual_label: "L'adreça on eres",
+    url_reason_ip: "Aquesta adreça és una adreça IP numèrica en comptes del nom d'una empresa. Les organitzacions reals fan servir el seu propi domini, de manera que una adreça feta de números és un indici clar que el lloc és fals.",
+    url_reason_punycode: "Aquesta adreça fa servir caràcters especials que imiten lletres normals. Els atacants els utilitzen perquè un domini fals sembli idèntic al real a primer cop d'ull.",
+    url_reason_brand_subdomain: "Llegeix l'adreça començant per la dreta, no per l'esquerra. La part que decideix on ets és {domain}: tot el que hi ha al davant és un subdomini, i qui sigui propietari de {domain} en pot crear tants com vulgui, amb el nom que vulgui.",
+    url_reason_brand_in_subdomain: "L'adreça sí que conté {brand}, però només com a subdomini. Els llocs autèntics també fan servir subdominis i, precisament per això, no demostren res: qui sigui propietari de {domain} hi pot posar al davant el nom que vulgui. El que decideix on ets és {domain}, la part just abans de la primera barra.",
+    url_reason_hyphen: "El domini real aquí és {domain}. Els atacants enganxen noms de marca amb guionets perquè l'adreça sembli oficial; el lloc autèntic faria servir, simplement, el domini propi de la marca.",
+    url_reason_tld: "El domini real aquí és {domain}. La seva terminació (.{tld}) és poc habitual entre les organitzacions consolidades i agrada als atacants perquè registrar-la és molt barat.",
+    url_reason_long: "Fixa't en com de llarga i embolicada és aquesta adreça: un seguit de paraules de més, guionets i caràcters solts al voltant de {domain}. Les pàgines d'inici de sessió autèntiques són en un domini curt i senzill; tanta llargada només serveix per deixar el nom real fora del teu camp de visió.",
+    url_reason_generic: "La part que decideix on ets de debò és {domain}: el text just abans de la primera barra. Tota la resta de l'adreça es pot manipular perquè sembli convincent.",
+    step_password_title: "Aquest formulari volia la teva contrasenya",
+    step_password_body: "Has estat a un pas de donar la contrasenya a un atacant. Les organitzacions reals no et demanen mai que confirmis la contrasenya a través d'un enllaç en un correu. Si tens dubtes, entra-hi pel teu compte escrivint l'adreça del lloc web.",
+    step_cc_title: "Aquest formulari demanava les dades de la teva targeta",
+    step_cc_body: "Si haguessis introduït aquí el número de la targeta, la data de caducitat i el codi de seguretat, haurien anat directes als delinqüents. Les empreses legítimes no recullen dades de pagament a través d'enllaços inesperats.",
+    step_download_title: "Aquesta baixada podria haver estat programari maliciós",
+    step_download_body: "Aquest fitxer podria haver instal·lat programari maliciós al teu dispositiu. Comprova l'extensió del fitxer abans d'obrir res i baixa programari només de fonts de confiança.",
+    step_suspicious_link_title: "Aquest enllaç no és el que diu ser",
+    step_suspicious_link_body: "El text de l'enllaç diu {shown}, però en realitat porta a {actual}. Passa el cursor per sobre dels enllaços per veure la destinació real abans de fer clic.",
+    step_brand_title: "Aquesta pàgina es fa passar per {brand}",
+    step_brand_body: "Es presenta com a {brand}, però l'adreça pertany a {domain}. Les grans empreses no allotgen les seves pàgines d'inici de sessió en dominis aliens: que el nom de la pàgina no coincideixi amb el de la barra d'adreces és un dels senyals més clars que és falsa.",
+    step_urgency_title: "La urgència és una tàctica de pressió",
+    step_urgency_body: "«Actua ara», terminis, amenaces de suspendre't el compte… Els atacants creen pressió perquè actuïs abans de pensar. Les empreses reals poques vegades exigeixen una acció immediata; atura't a pensar quan un missatge et vulgui fer córrer.",
+    urgency_quote: "Aquesta pàgina t'ha pressionat amb: «{quote}»",
+    perm_mic_title: "Has cedit el micròfon",
+    perm_mic_body: "Aquesta pàgina ara pot escoltar a través del teu micròfon fins que no li retiris l'accés. Un lloc real t'explica per què necessita el micròfon: per a una trucada o una gravació que has començat tu.",
+    perm_webcam_title: "Has cedit la càmera",
+    perm_webcam_body: "Aquesta pàgina ara pot veure't a través de la càmera fins que no li retiris l'accés. Permet l'accés a la càmera només en llocs que hagis obert tu i on s'esperi clarament una videotrucada.",
+    perm_location_title: "Has compartit la teva ubicació",
+    perm_location_body: "Aquesta pàgina ara sap on ets. Els llocs legítims només et demanen la ubicació quan és evident que cal, com ara per trobar una botiga propera, i continuen funcionant si t'hi negues.",
+    perm_notification_title: "Has permès les notificacions",
+    perm_notification_body: "Aquesta pàgina ara pot enviar-te missatges a l'escriptori, fins i tot després que la tanquis. Els atacants fan servir aquestes notificacions per mostrar falsos avisos de virus i arrossegar-te cap a més estafes.",
+    perm_clipboard_title: "Has donat accés al porta-retalls",
+    perm_clipboard_body: "El porta-retalls sovint conté una contrasenya, un número de targeta o una adreça de criptomonedes que acabes de copiar. Una pàgina amb accés al porta-retalls pot llegir-lo, o canviar d'amagat el que hi enganxes.",
+    perm_extension_title: "Has instal·lat una extensió del navegador",
+    perm_extension_body: "Les extensions poden llegir i modificar totes les pàgines que visites, incloent-hi el correu i el banc. Instal·la-les només des de les botigues oficials i només quan sàpigues qui les publica.",
+    lesson_login_title: "El cadenat no vol dir que sigui segur",
+    lesson_login_body: "La icona del cadenat o «https» només vol dir que la connexió està xifrada, no que el lloc sigui autèntic. Els llocs de phishing també fan servir xifratge. Confia en el nom del domini, no en el cadenat.",
+    lesson_fraud_title: "Com protegir els teus diners",
+    lesson_fraud_body: "No introdueixis mai dades de pagament en una pàgina a la qual has arribat des d'un correu o un missatge. Entra pel teu compte al lloc web oficial de l'empresa o a la seva aplicació, o truca al número que hi ha al revers de la targeta.",
+    lesson_malware_title: "Verifica abans de baixar",
+    lesson_malware_body: "Els fitxers adjunts i les baixades són una via preferida per colar programari maliciós al dispositiu. Confirma-ho amb el remitent per un altre canal i desconfia de tipus de fitxer com ara .exe o .zip, o de documents que et demanin activar macros.",
+    lesson_fake_title: "Si sembla massa bo per ser veritat…",
+    lesson_fake_body: "Les pàgines falses imiten marques de confiança per aconseguir el teu clic, les teves dades o la teva confiança. Comprova l'adreça, fixa't en els detalls descurats i, quan alguna cosa no et quadri, tanca la pàgina i entra-hi pel teu compte.",
+    lesson_permission_title: "Vigila què permets",
+    lesson_permission_body: "Acabes de concedir a aquesta pàgina un accés que no hauria de tenir. Els llocs legítims expliquen per què necessiten la càmera, el micròfon o la ubicació abans de demanar-te'n l'accés. Concedeix només permisos que entenguis del tot; els pots revisar a la configuració del navegador.",
+    step_done_title: "Què comprovar la propera vegada",
+    step_done_body: "Comprova l'adreça, qüestiona la urgència, protegeix les contrasenyes i les dades de la targeta, i pensa abans de baixar res. Fes clic a «Continua» per continuar.",
+};
+exports["default"] = strings;
+
+
+/***/ }),
+
+/***/ "./src/i18n/locales/de-DE.ts":
+/*!***********************************!*\
+  !*** ./src/i18n/locales/de-DE.ts ***!
+  \***********************************/
+/***/ ((__unused_webpack_module, exports) => {
+
+"use strict";
+
+Object.defineProperty(exports, "__esModule", ({ value: true }));
+const strings = {
+    heading: "Das war eine Phishing-Simulation",
+    intro: "Die gute Nachricht: Es war kein echter Angriff. Nehmen Sie sich eine Minute Zeit für die Warnsignale, die Sie übersehen haben – beim nächsten Mal kann Sie das schützen.",
+    next: "Weiter",
+    back: "Zurück",
+    skip: "Tutorial überspringen",
+    continue: "Fortfahren",
+    progress: "Schritt {n} von {total}",
+    arrow_hint: "Die Webadresse steht hier oben",
+    step_url_title: "Prüfen Sie immer zuerst die Adresse",
+    step_url_body: "Schauen Sie auf die Adressleiste oben in Ihrem Browser. Die Adresse dieser Seite gehört nicht zur echten Organisation – Angreifer verlassen sich darauf, dass Sie nicht hinsehen. Lesen Sie den Domainnamen genau, bevor Sie etwas eingeben, anklicken oder herunterladen.",
+    url_actual_label: "Die Adresse, auf der Sie waren",
+    url_reason_ip: "Diese Adresse ist eine bloße IP-Adresse statt eines Firmennamens. Echte Organisationen nutzen ihre eigene Domain – eine reine Zahlenadresse ist deshalb ein starkes Anzeichen für eine gefälschte Seite.",
+    url_reason_punycode: "Diese Adresse enthält Sonderzeichen, die gewöhnliche Buchstaben nachahmen. Angreifer nutzen sie, damit eine gefälschte Domain auf den ersten Blick genauso aussieht wie die echte.",
+    url_reason_brand_subdomain: "Lesen Sie die Adresse von rechts nach links. Entscheidend dafür, wo Sie sind, ist {domain}; alles davor ist eine Subdomain, und wer {domain} besitzt, kann beliebig viele davon anlegen – mit jedem Namen.",
+    url_reason_brand_in_subdomain: "Die Adresse enthält tatsächlich {brand} – allerdings nur als Subdomain. Auch echte Seiten nutzen Subdomains, und genau deshalb beweisen sie nichts: Wer {domain} besitzt, kann jeden beliebigen Namen davorsetzen. Entscheidend ist {domain}, der Teil unmittelbar vor dem ersten Schrägstrich.",
+    url_reason_hyphen: "Die eigentliche Domain lautet hier {domain}. Angreifer reihen Markennamen mit Bindestrichen aneinander, um offiziell zu wirken – die echte Website würde einfach die eigene Domain der Marke verwenden.",
+    url_reason_tld: "Die eigentliche Domain lautet hier {domain}. Ihre Endung (.{tld}) wird von etablierten Organisationen kaum genutzt und ist bei Angreifern beliebt, weil sie billig zu registrieren ist.",
+    url_reason_long: "Achten Sie darauf, wie lang und unübersichtlich diese Adresse ist: eine Kette aus zusätzlichen Wörtern, Bindestrichen und zufälligen Zeichen rund um {domain}. Echte Anmeldeseiten liegen auf einer kurzen, schlichten Domain – die Länge dient nur dazu, den echten Namen aus Ihrem Blickfeld zu schieben.",
+    url_reason_generic: "Entscheidend dafür, wo Sie wirklich sind, ist {domain} – der Teil direkt vor dem ersten Schrägstrich. Alles andere in der Adresse lässt sich täuschend echt gestalten.",
+    step_password_title: "Dieses Formular wollte Ihr Passwort",
+    step_password_body: "Sie waren nur einen Schritt davon entfernt, Ihr Passwort einem Angreifer zu übergeben. Echte Organisationen bitten Sie niemals, Ihr Passwort über einen Link in einer E-Mail zu bestätigen. Öffnen Sie die Website im Zweifel selbst, indem Sie ihre Adresse eintippen.",
+    step_cc_title: "Dieses Formular hat nach Ihren Kartendaten gefragt",
+    step_cc_body: "Hätten Sie hier Kartennummer, Ablaufdatum und Sicherheitscode eingegeben, wären sie direkt bei Kriminellen gelandet. Seriöse Unternehmen erfragen Zahlungsdaten nicht über unerwartete Links.",
+    step_download_title: "Dieser Download hätte Schadsoftware enthalten können",
+    step_download_body: "Diese Datei hätte Schadsoftware auf Ihrem Gerät installieren können. Prüfen Sie die Dateiendung, bevor Sie etwas öffnen – und laden Sie Programme nur aus vertrauenswürdigen Quellen herunter.",
+    step_suspicious_link_title: "Dieser Link ist nicht das, was er vorgibt zu sein",
+    step_suspicious_link_body: "Der Linktext lautet {shown}, tatsächlich führt er aber zu {actual}. Fahren Sie mit der Maus über Links, um vor dem Klicken das echte Ziel zu sehen.",
+    step_brand_title: "Diese Seite gibt sich als {brand} aus",
+    step_brand_body: "Sie tritt als {brand} auf, doch die Adresse gehört zu {domain}. Große Unternehmen betreiben ihre Anmeldeseiten nicht auf fremden Domains – wenn der Name auf der Seite nicht zum Namen in der Adressleiste passt, ist das eines der deutlichsten Anzeichen für eine Fälschung.",
+    step_urgency_title: "Zeitdruck ist eine gezielte Masche",
+    step_urgency_body: "„Handeln Sie jetzt“, Fristen, Drohungen mit Kontosperrung – Angreifer erzeugen Druck, damit Sie handeln, bevor Sie nachdenken. Seriöse Unternehmen verlangen selten sofortiges Handeln; halten Sie inne, wenn eine Nachricht Sie zur Eile drängt.",
+    urgency_quote: "Diese Seite hat Sie so unter Druck gesetzt: „{quote}“",
+    perm_mic_title: "Sie haben Ihr Mikrofon freigegeben",
+    perm_mic_body: "Diese Seite kann jetzt über Ihr Mikrofon mithören, bis Sie den Zugriff widerrufen. Eine seriöse Website sagt Ihnen, wofür sie Ihr Mikrofon braucht – etwa für einen Anruf oder eine Aufnahme, die Sie selbst gestartet haben.",
+    perm_webcam_title: "Sie haben Ihre Kamera freigegeben",
+    perm_webcam_body: "Diese Seite kann jetzt durch Ihre Kamera sehen, bis Sie den Zugriff widerrufen. Erlauben Sie Kamerazugriff nur auf Websites, die Sie selbst geöffnet haben und auf denen ein Videoanruf klar zu erwarten ist.",
+    perm_location_title: "Sie haben Ihren Standort preisgegeben",
+    perm_location_body: "Diese Seite weiß jetzt, wo Sie sind. Seriöse Websites fragen nur dann nach Ihrem Standort, wenn er offensichtlich gebraucht wird – etwa um eine Filiale in der Nähe zu finden – und sie funktionieren auch, wenn Sie ablehnen.",
+    perm_notification_title: "Sie haben Benachrichtigungen erlaubt",
+    perm_notification_body: "Diese Seite kann jetzt Meldungen auf Ihren Desktop schicken – auch nachdem Sie sie geschlossen haben. Angreifer nutzen das für gefälschte Virenwarnungen und um Sie in weitere Betrugsmaschen zu locken.",
+    perm_clipboard_title: "Sie haben Zugriff auf Ihre Zwischenablage gewährt",
+    perm_clipboard_body: "In Ihrer Zwischenablage liegt oft ein gerade kopiertes Passwort, eine Kartennummer oder eine Krypto-Adresse. Eine Seite mit Zugriff auf die Zwischenablage kann das auslesen – oder unbemerkt austauschen, was Sie einfügen.",
+    perm_extension_title: "Sie haben eine Browser-Erweiterung installiert",
+    perm_extension_body: "Erweiterungen können jede Seite, die Sie besuchen, mitlesen und verändern – auch Ihre E-Mails und Ihr Online-Banking. Installieren Sie sie nur aus offiziellen Stores und nur dann, wenn Sie wissen, wer dahintersteht.",
+    lesson_login_title: "Das Schloss-Symbol bedeutet nicht, dass die Seite sicher ist",
+    lesson_login_body: "Das Schloss-Symbol oder „https“ bedeutet nur, dass die Verbindung verschlüsselt ist – nicht, dass die Website echt ist. Auch Phishing-Seiten nutzen Verschlüsselung. Vertrauen Sie dem Domainnamen, nicht dem Schloss.",
+    lesson_fraud_title: "So schützen Sie Ihr Geld",
+    lesson_fraud_body: "Geben Sie niemals Zahlungsdaten auf einer Seite ein, die Sie über eine E-Mail oder Nachricht erreicht haben. Rufen Sie die offizielle Website oder App des Unternehmens selbst auf oder wählen Sie die Nummer auf der Rückseite Ihrer Karte.",
+    lesson_malware_title: "Erst prüfen, dann herunterladen",
+    lesson_malware_body: "Anhänge und Downloads sind ein beliebter Weg, Schadsoftware auf Ihr Gerät zu schleusen. Fragen Sie beim Absender über einen anderen Kanal nach und seien Sie misstrauisch bei Dateitypen wie .exe oder .zip sowie bei Dokumenten, die Sie zum Aktivieren von Makros auffordern.",
+    lesson_fake_title: "Wenn etwas zu schön ist, um wahr zu sein …",
+    lesson_fake_body: "Gefälschte Seiten imitieren vertrauenswürdige Marken, um an Ihren Klick, Ihre Daten oder Ihr Vertrauen zu kommen. Prüfen Sie die Adresse, achten Sie auf nachlässige Details – und wenn Ihnen etwas seltsam vorkommt, schließen Sie die Seite und rufen Sie die Website selbst auf.",
+    lesson_permission_title: "Vorsicht bei Berechtigungen",
+    lesson_permission_body: "Sie haben dieser Seite gerade einen Zugriff erlaubt, den sie nicht haben dürfte. Seriöse Websites erklären, warum sie Kamera, Mikrofon oder Standort benötigen, bevor sie danach fragen. Erteilen Sie nur Berechtigungen, die Sie vollständig verstehen – Sie können sie in den Browsereinstellungen überprüfen.",
+    step_done_title: "Worauf Sie beim nächsten Mal achten",
+    step_done_body: "Prüfen Sie die Adresse, hinterfragen Sie Dringlichkeit, schützen Sie Passwörter und Kartendaten und denken Sie nach, bevor Sie etwas herunterladen. Klicken Sie auf „Fortfahren“, um zum nächsten Schritt zu gelangen.",
+};
+exports["default"] = strings;
+
+
+/***/ }),
+
+/***/ "./src/i18n/locales/el-GR.ts":
+/*!***********************************!*\
+  !*** ./src/i18n/locales/el-GR.ts ***!
+  \***********************************/
+/***/ ((__unused_webpack_module, exports) => {
+
+"use strict";
+
+Object.defineProperty(exports, "__esModule", ({ value: true }));
+const strings = {
+    heading: "Αυτή ήταν μια προσομοίωση phishing",
+    intro: "Τα καλά νέα: δεν επρόκειτο για πραγματική επίθεση. Αφιερώστε ένα λεπτό για να δείτε τα προειδοποιητικά σημάδια που σας διέφυγαν — την επόμενη φορά μπορεί να σας σώσουν.",
+    next: "Επόμενο",
+    back: "Πίσω",
+    skip: "Παράλειψη οδηγού",
+    continue: "Συνέχεια",
+    progress: "Βήμα {n} από {total}",
+    arrow_hint: "Η διεύθυνση ιστού βρίσκεται εδώ πάνω",
+    step_url_title: "Ελέγχετε πάντα πρώτα τη διεύθυνση",
+    step_url_body: "Κοιτάξτε τη γραμμή διευθύνσεων στο επάνω μέρος του προγράμματος περιήγησης. Η διεύθυνση αυτής της σελίδας δεν ανήκει στον πραγματικό οργανισμό — οι επιτιθέμενοι υπολογίζουν ακριβώς στο ότι δεν θα την κοιτάξετε. Πριν πληκτρολογήσετε, κάνετε κλικ ή κατεβάσετε οτιδήποτε, διαβάστε προσεκτικά το όνομα τομέα (domain).",
+    url_actual_label: "Η διεύθυνση στην οποία βρισκόσασταν",
+    url_reason_ip: "Αυτή η διεύθυνση αποτελείται από αριθμούς (διεύθυνση IP) αντί για όνομα εταιρείας. Οι πραγματικοί οργανισμοί χρησιμοποιούν δικό τους όνομα τομέα (domain), επομένως μια αριθμητική διεύθυνση αποτελεί ισχυρή ένδειξη ψεύτικου ιστότοπου.",
+    url_reason_punycode: "Αυτή η διεύθυνση χρησιμοποιεί ειδικούς χαρακτήρες που μιμούνται συνηθισμένα γράμματα. Οι επιτιθέμενοι τους χρησιμοποιούν ώστε ένα ψεύτικο όνομα τομέα (domain) να φαίνεται με μια ματιά πανομοιότυπο με το πραγματικό.",
+    url_reason_brand_subdomain: "Διαβάστε τη διεύθυνση από τα δεξιά, όχι από τα αριστερά. Το τμήμα που καθορίζει πού βρίσκεστε είναι το {domain}· ό,τι προηγείται είναι υποτομέας, και όποιος κατέχει το {domain} μπορεί να δημιουργήσει όσους θέλει, με όποιο όνομα θέλει.",
+    url_reason_brand_in_subdomain: "Η διεύθυνση όντως περιέχει το {brand} — αλλά μόνο ως υποτομέα. Και οι γνήσιοι ιστότοποι χρησιμοποιούν υποτομείς, γι' αυτό ακριβώς δεν αποδεικνύουν τίποτα: όποιος κατέχει το {domain} μπορεί να βάλει μπροστά όποιο όνομα θέλει. Αυτό που καθορίζει πού βρίσκεστε είναι το {domain}, το τμήμα ακριβώς πριν από την πρώτη κάθετο.",
+    url_reason_hyphen: "Το πραγματικό όνομα τομέα (domain) εδώ είναι το {domain}. Οι επιτιθέμενοι ενώνουν επωνυμίες με παύλες για να δείχνουν επίσημοι· ο γνήσιος ιστότοπος θα χρησιμοποιούσε απλώς το όνομα τομέα της ίδιας της επωνυμίας.",
+    url_reason_tld: "Το πραγματικό όνομα τομέα (domain) εδώ είναι το {domain}. Η κατάληξή του (.{tld}) χρησιμοποιείται σπάνια από καταξιωμένους οργανισμούς και είναι δημοφιλής στους επιτιθέμενους, επειδή η καταχώρισή της κοστίζει ελάχιστα.",
+    url_reason_long: "Προσέξτε πόσο μεγάλη και μπερδεμένη είναι αυτή η διεύθυνση: μια σειρά από περιττές λέξεις, παύλες και τυχαίους χαρακτήρες γύρω από το {domain}. Οι γνήσιες σελίδες σύνδεσης βρίσκονται σε ένα σύντομο και απλό όνομα τομέα· όλη αυτή η φλυαρία υπάρχει μόνο για να διώξει το πραγματικό όνομα από το οπτικό σας πεδίο.",
+    url_reason_generic: "Το τμήμα που καθορίζει πού βρίσκεστε πραγματικά είναι το {domain} — το κείμενο ακριβώς πριν από την πρώτη κάθετο. Οτιδήποτε άλλο στη διεύθυνση μπορεί να διαμορφωθεί έτσι ώστε να φαίνεται πειστικό.",
+    step_password_title: "Αυτή η φόρμα ήθελε τον κωδικό πρόσβασής σας",
+    step_password_body: "Απείχατε μόλις ένα βήμα από το να παραδώσετε τον κωδικό πρόσβασής σας σε έναν επιτιθέμενο. Οι νόμιμοι οργανισμοί δεν σας ζητούν ποτέ να επιβεβαιώσετε τον κωδικό σας μέσω συνδέσμου σε e-mail. Αν έχετε αμφιβολίες, ανοίξτε μόνοι σας τον ιστότοπο πληκτρολογώντας τη διεύθυνσή του.",
+    step_cc_title: "Αυτή η φόρμα ζητούσε τα στοιχεία της κάρτας σας",
+    step_cc_body: "Αν είχατε εισαγάγει εδώ τον αριθμό της κάρτας, την ημερομηνία λήξης και τον κωδικό ασφαλείας, θα είχαν πάει κατευθείαν σε εγκληματίες. Οι νόμιμες εταιρείες δεν συλλέγουν στοιχεία πληρωμής μέσω απροσδόκητων συνδέσμων.",
+    step_download_title: "Αυτή η λήψη θα μπορούσε να ήταν κακόβουλο λογισμικό",
+    step_download_body: "Αυτό το αρχείο θα μπορούσε να είχε εγκαταστήσει κακόβουλο λογισμικό στη συσκευή σας. Ελέγξτε την επέκταση του αρχείου πριν ανοίξετε οτιδήποτε — και κατεβάζετε προγράμματα μόνο από αξιόπιστες πηγές.",
+    step_suspicious_link_title: "Αυτός ο σύνδεσμος δεν είναι αυτό που δείχνει",
+    step_suspicious_link_body: "Το κείμενο του συνδέσμου γράφει {shown}, αλλά στην πραγματικότητα οδηγεί στο {actual}. Περάστε το ποντίκι πάνω από τους συνδέσμους για να δείτε τον πραγματικό προορισμό πριν κάνετε κλικ.",
+    step_brand_title: "Αυτή η σελίδα παριστάνει την {brand}",
+    step_brand_body: "Εμφανίζεται ως {brand}, αλλά η διεύθυνση ανήκει στο {domain}. Οι μεγάλες εταιρείες δεν φιλοξενούν τις σελίδες σύνδεσής τους σε άσχετα ονόματα τομέα: όταν το όνομα στη σελίδα δεν συμφωνεί με το όνομα στη γραμμή διευθύνσεων, αυτό είναι μία από τις πιο ξεκάθαρες ενδείξεις πλαστότητας.",
+    step_urgency_title: "Η αίσθηση του επείγοντος είναι τακτική πίεσης",
+    step_urgency_body: "«Δράστε τώρα», προθεσμίες, απειλές για αναστολή λογαριασμού — οι επιτιθέμενοι δημιουργούν πίεση για να δράσετε πριν σκεφτείτε. Οι νόμιμες εταιρείες σπάνια απαιτούν άμεση ενέργεια· επιβραδύνετε όταν ένα μήνυμα σάς πιέζει.",
+    urgency_quote: "Αυτή η σελίδα σας πίεσε με τη φράση: «{quote}»",
+    perm_mic_title: "Παραχωρήσατε το μικρόφωνό σας",
+    perm_mic_body: "Αυτή η σελίδα μπορεί πλέον να ακούει μέσω του μικροφώνου σας, μέχρι να ανακαλέσετε την πρόσβαση. Ένας πραγματικός ιστότοπος σας εξηγεί γιατί χρειάζεται το μικρόφωνο — για μια κλήση ή μια ηχογράφηση που ξεκινήσατε εσείς οι ίδιοι.",
+    perm_webcam_title: "Παραχωρήσατε την κάμερά σας",
+    perm_webcam_body: "Αυτή η σελίδα μπορεί πλέον να βλέπει μέσω της κάμεράς σας, μέχρι να ανακαλέσετε την πρόσβαση. Επιτρέπετε την πρόσβαση στην κάμερα μόνο σε ιστότοπο που ανοίξατε μόνοι σας, όπου μια βιντεοκλήση είναι σαφώς αναμενόμενη.",
+    perm_location_title: "Κοινοποιήσατε την τοποθεσία σας",
+    perm_location_body: "Αυτή η σελίδα γνωρίζει πλέον πού βρίσκεστε. Οι νόμιμοι ιστότοποι ζητούν την τοποθεσία σας μόνο όταν είναι προφανώς απαραίτητη, όπως για την εύρεση ενός κοντινού καταστήματος — και λειτουργούν κανονικά ακόμη κι αν αρνηθείτε.",
+    perm_notification_title: "Επιτρέψατε τις ειδοποιήσεις",
+    perm_notification_body: "Αυτή η σελίδα μπορεί πλέον να στέλνει μηνύματα στην επιφάνεια εργασίας σας, ακόμη και αφού την κλείσετε. Οι επιτιθέμενοι χρησιμοποιούν τις ειδοποιήσεις για να εμφανίζουν ψεύτικες προειδοποιήσεις για ιούς και να σας παρασύρουν σε περαιτέρω απάτες.",
+    perm_clipboard_title: "Παραχωρήσατε πρόσβαση στο πρόχειρό σας",
+    perm_clipboard_body: "Το πρόχειρο συχνά περιέχει έναν κωδικό πρόσβασης, έναν αριθμό κάρτας ή μια διεύθυνση κρυπτονομισμάτων που μόλις αντιγράψατε. Μια σελίδα με πρόσβαση στο πρόχειρο μπορεί να διαβάσει το περιεχόμενό του — ή να αντικαταστήσει αθόρυβα αυτό που επικολλάτε.",
+    perm_extension_title: "Εγκαταστήσατε μια επέκταση προγράμματος περιήγησης",
+    perm_extension_body: "Οι επεκτάσεις μπορούν να διαβάζουν και να τροποποιούν κάθε σελίδα που επισκέπτεστε, συμπεριλαμβανομένων του e-mail και της τράπεζάς σας. Να τις εγκαθιστάτε μόνο από τα επίσημα καταστήματα και μόνο όταν γνωρίζετε ποιος τις εκδίδει.",
+    lesson_login_title: "Το λουκέτο δεν σημαίνει ότι η σελίδα είναι ασφαλής",
+    lesson_login_body: "Το εικονίδιο του λουκέτου ή το «https» σημαίνει μόνο ότι η σύνδεσή σας είναι κρυπτογραφημένη — όχι ότι ο ιστότοπος είναι γνήσιος. Και οι ιστότοποι phishing χρησιμοποιούν κρυπτογράφηση. Εμπιστευτείτε το όνομα τομέα (domain), όχι το λουκέτο.",
+    lesson_fraud_title: "Πώς να προστατεύσετε τα χρήματά σας",
+    lesson_fraud_body: "Μην εισάγετε ποτέ στοιχεία πληρωμής σε σελίδα στην οποία φτάσατε από e-mail ή μήνυμα. Επισκεφθείτε μόνοι σας τον επίσημο ιστότοπο ή την εφαρμογή της εταιρείας ή καλέστε τον αριθμό στο πίσω μέρος της κάρτας σας.",
+    lesson_malware_title: "Επαληθεύστε πριν κατεβάσετε",
+    lesson_malware_body: "Τα συνημμένα και οι λήψεις αποτελούν αγαπημένη μέθοδο των επιτιθέμενων για να περάσουν κακόβουλο λογισμικό στη συσκευή σας. Επιβεβαιώστε με τον αποστολέα μέσω άλλου καναλιού και να είστε καχύποπτοι με τύπους αρχείων όπως .exe, .zip ή έγγραφα που ζητούν να ενεργοποιήσετε μακροεντολές.",
+    lesson_fake_title: "Αν φαίνεται πολύ καλό για να είναι αληθινό…",
+    lesson_fake_body: "Οι ψεύτικες σελίδες μιμούνται αξιόπιστες επωνυμίες για να κερδίσουν το κλικ, τα δεδομένα ή την εμπιστοσύνη σας. Ελέγξτε τη διεύθυνση, ψάξτε για πρόχειρες λεπτομέρειες και, όταν κάτι σας φαίνεται περίεργο, κλείστε τη σελίδα και μεταβείτε μόνοι σας στον ιστότοπο.",
+    lesson_permission_title: "Προσέχετε τι επιτρέπετε",
+    lesson_permission_body: "Μόλις παραχωρήσατε σε αυτήν τη σελίδα πρόσβαση που δεν θα έπρεπε να έχει. Οι νόμιμοι ιστότοποι εξηγούν γιατί χρειάζονται την κάμερα, το μικρόφωνο ή την τοποθεσία σας πριν τα ζητήσουν. Παραχωρείτε μόνο δικαιώματα που κατανοείτε πλήρως — μπορείτε να τα ελέγξετε στις ρυθμίσεις του προγράμματος περιήγησης.",
+    step_done_title: "Τι να ελέγχετε την επόμενη φορά",
+    step_done_body: "Ελέγχετε τη διεύθυνση, αμφισβητείτε την αίσθηση του επείγοντος, προστατεύετε τους κωδικούς και τα στοιχεία της κάρτας σας και να σκέφτεστε πριν κατεβάσετε. Πατήστε «Συνέχεια» για να προχωρήσετε.",
+};
+exports["default"] = strings;
+
+
+/***/ }),
+
+/***/ "./src/i18n/locales/en-US.ts":
+/*!***********************************!*\
+  !*** ./src/i18n/locales/en-US.ts ***!
+  \***********************************/
+/***/ ((__unused_webpack_module, exports) => {
+
+"use strict";
+
+Object.defineProperty(exports, "__esModule", ({ value: true }));
+const strings = {
+    heading: "This was a phishing simulation",
+    intro: "The good news: it wasn't a real attack. Take a minute to see the warning signs you missed — it could save you next time.",
+    next: "Next",
+    back: "Back",
+    skip: "Skip tutorial",
+    continue: "Continue",
+    progress: "Step {n} of {total}",
+    arrow_hint: "The web address is up here",
+    step_url_title: "Always check the address first",
+    step_url_body: "Look at the address bar at the top of your browser. This page's address doesn't belong to the real organization — attackers count on you not looking.",
+    url_actual_label: "The address you were on",
+    url_reason_ip: "This address is a raw IP address instead of a company name. Real organizations use their own domain, so a numeric address is a strong sign of a fake site.",
+    url_reason_punycode: "This address uses special characters that imitate ordinary letters. Attackers use them so a fake domain looks identical to a real one at a glance.",
+    url_reason_brand_subdomain: "Read the address from the right, not the left. The part that decides where you are is {domain}; everything before it is a subdomain, and whoever owns {domain} can create as many as they like, named anything they like.",
+    url_reason_brand_in_subdomain: "The address really does contain {brand} — but only as a subdomain. Real sites use subdomains too, which is exactly why they prove nothing: whoever owns {domain} can put any name in front of it. What decides where you are is {domain}, the part immediately before the first slash.",
+    url_reason_hyphen: "The real domain here is {domain}. Attackers glue brand names together with hyphens to look official; the genuine site would simply use the brand's own domain.",
+    url_reason_tld: "The real domain here is {domain}. Its ending (.{tld}) is rarely used by established organizations and is popular with attackers because it's cheap to register.",
+    url_reason_long: "Look at how long and cluttered this address is: a chain of extra words, dashes and random characters around {domain}. Genuine sign-in pages live on a short, plain domain — length and clutter are there to push the real name out of sight.",
+    url_reason_generic: "The part that decides where you really are is {domain} — the text right before the first slash. Everything else in the address can be made to look convincing.",
+    step_password_title: "This form wanted your password",
+    step_password_body: "You were one step away from handing your password to an attacker. Real organizations never ask you to confirm your password through a link in an email. When in doubt, open the site yourself by typing its address.",
+    step_cc_title: "This form asked for card details",
+    step_cc_body: "Entering your card number, expiry date, and security code here would have sent them straight to criminals. Legitimate companies don't collect payment details through unexpected links.",
+    step_download_title: "This download could have been malware",
+    step_download_body: "This file could have installed malicious software on your device. Check the file extension before opening anything — and only download software from sources you trust.",
+    step_suspicious_link_title: "This link isn't what it claims",
+    step_suspicious_link_body: "The link's text says {shown}, but it actually leads to {actual}. Hover over links to preview the real destination before clicking.",
+    step_brand_title: "This page pretends to be {brand}",
+    step_brand_body: "It presents itself as {brand}, but the address belongs to {domain}. Big companies don't put their sign-in pages on unrelated domains — a name on the page that doesn't match the name in the address bar is one of the clearest signs of a fake.",
+    step_urgency_title: "Urgency is a pressure tactic",
+    step_urgency_body: "\"Act now\", deadlines, threats of suspended accounts — attackers create pressure so you act before you think. Real companies rarely demand immediate action; slow down when a message rushes you.",
+    urgency_quote: "This page pressured you with: \"{quote}\"",
+    perm_mic_title: "You gave away your microphone",
+    perm_mic_body: "This page can now listen through your microphone until you revoke access. A real site tells you why it needs your mic — for a call or a recording you started yourself.",
+    perm_webcam_title: "You gave away your camera",
+    perm_webcam_body: "This page can now see through your camera until you revoke access. Only allow camera access on a site you opened yourself, where a video call is clearly expected.",
+    perm_location_title: "You shared your location",
+    perm_location_body: "This page now knows where you are. Legitimate sites ask for your location only when it's obviously needed, like finding a nearby store — and they still work if you decline.",
+    perm_notification_title: "You allowed notifications",
+    perm_notification_body: "This page can now push messages to your desktop, even after you close it. Attackers use them to deliver fake virus alerts and lure you into further scams.",
+    perm_clipboard_title: "You gave access to your clipboard",
+    perm_clipboard_body: "Your clipboard often holds a password, card number, or crypto address you just copied. A page with clipboard access can read it — or silently swap what you paste.",
+    perm_extension_title: "You installed a browser extension",
+    perm_extension_body: "Extensions can read and change every page you visit, including your email and your bank. Install them only from official stores, and only when you know who publishes them.",
+    lesson_login_title: "The padlock doesn't mean it's safe",
+    lesson_login_body: "A padlock icon or \"https\" only means your connection is encrypted — not that the site is genuine. Phishing sites use encryption too. Trust the domain name, not the padlock.",
+    lesson_fraud_title: "How to protect your money",
+    lesson_fraud_body: "Never enter payment details on a page you reached from an email or message. Go to the company's official website or app yourself, or call the number on the back of your card.",
+    lesson_malware_title: "Verify before you download",
+    lesson_malware_body: "Attachments and downloads are a favorite way to sneak malware onto your device. Confirm with the sender through another channel, and be suspicious of file types like .exe, .zip, or documents asking you to enable macros.",
+    lesson_fake_title: "If it looks too good to be true…",
+    lesson_fake_body: "Fake pages imitate trusted brands to get your click, your data, or your trust. Check the address, look for sloppy details, and when something feels off, close the page and navigate there yourself.",
+    lesson_permission_title: "Be careful what you allow",
+    lesson_permission_body: "You just granted this page access it shouldn't have. Legitimate sites explain why they need your camera, microphone, or location before asking. Only grant permissions you fully understand — you can review them in your browser settings.",
+    step_done_title: "What to check next time",
+    step_done_body: "Check the address, question urgency, guard your passwords and card details, and think before you download. Click Continue to move on.",
+};
+exports["default"] = strings;
+
+
+/***/ }),
+
+/***/ "./src/i18n/locales/es-419.ts":
+/*!************************************!*\
+  !*** ./src/i18n/locales/es-419.ts ***!
+  \************************************/
+/***/ ((__unused_webpack_module, exports) => {
+
+"use strict";
+
+Object.defineProperty(exports, "__esModule", ({ value: true }));
+const strings = {
+    heading: "Esto era una simulación de phishing",
+    intro: "La buena noticia: no era un ataque real. Tómate un minuto para ver las señales de alerta que pasaste por alto; la próxima vez podrían salvarte.",
+    next: "Siguiente",
+    back: "Atrás",
+    skip: "Omitir el tutorial",
+    continue: "Continuar",
+    progress: "Paso {n} de {total}",
+    arrow_hint: "La dirección web está aquí arriba",
+    step_url_title: "Siempre revisa primero la dirección",
+    step_url_body: "Fíjate en la barra de direcciones en la parte superior del navegador. La dirección de esta página no pertenece a la organización real: los atacantes cuentan con que no mires. Antes de escribir, hacer clic o descargar algo, lee con atención el nombre del dominio.",
+    url_actual_label: "La dirección en la que estabas",
+    url_reason_ip: "Esta dirección es una IP numérica en lugar del nombre de una empresa. Las organizaciones reales usan su propio dominio, así que una dirección en puros números es una señal clara de un sitio falso.",
+    url_reason_punycode: "Esta dirección usa caracteres especiales que imitan letras comunes. Los atacantes los usan para que, a simple vista, un dominio falso se vea idéntico al real.",
+    url_reason_brand_subdomain: "Lee la dirección desde la derecha, no desde la izquierda. La parte que decide dónde estás es {domain}; todo lo que va antes es un subdominio, y quien sea dueño de {domain} puede crear todos los que quiera, con el nombre que quiera.",
+    url_reason_brand_in_subdomain: "La dirección sí contiene {brand}, pero solo como subdominio. Los sitios auténticos también usan subdominios, y por eso mismo no prueban nada: quien sea dueño de {domain} puede poner adelante el nombre que se le ocurra. Lo que decide dónde estás es {domain}, la parte justo antes de la primera barra.",
+    url_reason_hyphen: "El dominio real aquí es {domain}. Los atacantes pegan nombres de marcas con guiones para verse oficiales; el sitio auténtico simplemente usaría el dominio propio de la marca.",
+    url_reason_tld: "El dominio real aquí es {domain}. Su terminación (.{tld}) casi no la usan las organizaciones establecidas y es popular entre los atacantes porque registrarla cuesta muy poco.",
+    url_reason_long: "Fíjate en lo larga y enredada que es esta dirección: un montón de palabras de más, guiones y caracteres sueltos alrededor de {domain}. Las páginas de inicio de sesión auténticas usan un dominio corto y simple; tanto relleno solo sirve para dejar el nombre real fuera de tu vista.",
+    url_reason_generic: "La parte que decide dónde estás realmente es {domain}: el texto justo antes de la primera barra. Todo lo demás en la dirección se puede manipular para que se vea convincente.",
+    step_password_title: "Este formulario quería tu contraseña",
+    step_password_body: "Estabas a un paso de entregarle tu contraseña a un atacante. Las organizaciones reales nunca te piden confirmar tu contraseña a través de un enlace en un correo. Ante la duda, entra por tu cuenta al sitio escribiendo su dirección.",
+    step_cc_title: "Este formulario pedía los datos de tu tarjeta",
+    step_cc_body: "Si hubieras ingresado aquí el número de tu tarjeta, la fecha de vencimiento y el código de seguridad, habrían ido directo a los delincuentes. Las empresas legítimas no recopilan datos de pago a través de enlaces inesperados.",
+    step_download_title: "Esta descarga podría haber sido malware",
+    step_download_body: "Este archivo podría haber instalado software malicioso en tu dispositivo. Revisa la extensión del archivo antes de abrir algo y descarga programas solo de fuentes confiables.",
+    step_suspicious_link_title: "Este enlace no es lo que dice ser",
+    step_suspicious_link_body: "El texto del enlace dice {shown}, pero en realidad lleva a {actual}. Pasa el cursor sobre los enlaces para ver el destino real antes de hacer clic.",
+    step_brand_title: "Esta página se hace pasar por {brand}",
+    step_brand_body: "Se presenta como {brand}, pero la dirección pertenece a {domain}. Las grandes empresas no alojan sus páginas de inicio de sesión en dominios ajenos: que el nombre de la página no coincida con el de la barra de direcciones es una de las señales más claras de que es falsa.",
+    step_urgency_title: "La urgencia es una táctica de presión",
+    step_urgency_body: "\"Actúa ya\", fechas límite, amenazas de suspender tu cuenta… Los atacantes crean presión para que actúes antes de pensar. Las empresas reales rara vez exigen una acción inmediata; tómate tu tiempo cuando un mensaje te apure.",
+    urgency_quote: "Esta página te presionó con: \"{quote}\"",
+    perm_mic_title: "Cediste el acceso a tu micrófono",
+    perm_mic_body: "Esta página ahora puede escuchar a través de tu micrófono hasta que le revoques el acceso. Un sitio real te dice para qué necesita el micrófono: una llamada o una grabación que iniciaste por tu cuenta.",
+    perm_webcam_title: "Cediste el acceso a tu cámara",
+    perm_webcam_body: "Esta página ahora puede ver a través de tu cámara hasta que le revoques el acceso. Permite el acceso a la cámara solo en un sitio que abriste por tu cuenta y donde claramente se espera una videollamada.",
+    perm_location_title: "Compartiste tu ubicación",
+    perm_location_body: "Esta página ahora sabe dónde estás. Los sitios legítimos piden tu ubicación solo cuando es evidente que la necesitan, como para encontrar una tienda cercana, y siguen funcionando si la rechazas.",
+    perm_notification_title: "Permitiste las notificaciones",
+    perm_notification_body: "Esta página ahora puede mostrarte mensajes en tu computadora, incluso después de que la cierres. Los atacantes los usan para enviar falsas alertas de virus y arrastrarte a más estafas.",
+    perm_clipboard_title: "Diste acceso a tu portapapeles",
+    perm_clipboard_body: "Tu portapapeles suele guardar una contraseña, un número de tarjeta o una dirección de criptomonedas que acabas de copiar. Una página con acceso al portapapeles puede leerlo o cambiar lo que pegas sin que lo notes.",
+    perm_extension_title: "Instalaste una extensión del navegador",
+    perm_extension_body: "Las extensiones pueden leer y modificar todas las páginas que visitas, incluidos tu correo y tu banco. Instálalas solo desde las tiendas oficiales y solo cuando sepas quién las publica.",
+    lesson_login_title: "El candado no significa que sea seguro",
+    lesson_login_body: "El ícono del candado o \"https\" solo significa que la conexión está cifrada, no que el sitio sea auténtico. Los sitios de phishing también usan cifrado. Confía en el nombre del dominio, no en el candado.",
+    lesson_fraud_title: "Cómo proteger tu dinero",
+    lesson_fraud_body: "Nunca ingreses datos de pago en una página a la que llegaste desde un correo o un mensaje. Entra por tu cuenta al sitio web o a la aplicación oficial de la empresa, o llama al número que está al reverso de tu tarjeta.",
+    lesson_malware_title: "Verifica antes de descargar",
+    lesson_malware_body: "Los adjuntos y las descargas son una vía favorita para meter malware en tu dispositivo. Confirma con el remitente por otro canal y desconfía de tipos de archivo como .exe, .zip o documentos que te pidan activar macros.",
+    lesson_fake_title: "Si parece demasiado bueno para ser verdad…",
+    lesson_fake_body: "Las páginas falsas imitan a marcas de confianza para conseguir tu clic, tus datos o tu confianza. Revisa la dirección, busca detalles descuidados y, cuando algo te parezca extraño, cierra la página y entra al sitio por tu cuenta.",
+    lesson_permission_title: "Cuidado con lo que permites",
+    lesson_permission_body: "Acabas de darle a esta página un acceso que no debería tener. Los sitios legítimos explican por qué necesitan tu cámara, micrófono o ubicación antes de pedirlos. Otorga solo permisos que entiendas por completo; puedes revisarlos en la configuración del navegador.",
+    step_done_title: "Qué revisar la próxima vez",
+    step_done_body: "Revisa la dirección, cuestiona la urgencia, protege tus contraseñas y los datos de tu tarjeta, y piensa antes de descargar. Haz clic en Continuar para seguir.",
+};
+exports["default"] = strings;
+
+
+/***/ }),
+
+/***/ "./src/i18n/locales/es-ES.ts":
+/*!***********************************!*\
+  !*** ./src/i18n/locales/es-ES.ts ***!
+  \***********************************/
+/***/ ((__unused_webpack_module, exports) => {
+
+"use strict";
+
+Object.defineProperty(exports, "__esModule", ({ value: true }));
+const strings = {
+    heading: "Esto ha sido una simulación de phishing",
+    intro: "La buena noticia: no ha sido un ataque real. Dedica un minuto a repasar las señales de alerta que se te escaparon; la próxima vez pueden salvarte.",
+    next: "Siguiente",
+    back: "Atrás",
+    skip: "Omitir tutorial",
+    continue: "Continuar",
+    progress: "Paso {n} de {total}",
+    arrow_hint: "La dirección web está aquí arriba",
+    step_url_title: "Comprueba siempre primero la dirección",
+    step_url_body: "Fíjate en la barra de direcciones en la parte superior del navegador. La dirección de esta página no pertenece a la organización real: los atacantes cuentan con que no mires. Antes de escribir, hacer clic o descargar nada, lee con atención el nombre del dominio.",
+    url_actual_label: "La dirección en la que estabas",
+    url_reason_ip: "Esta dirección es directamente una IP en lugar del nombre de una empresa. Las organizaciones reales usan su propio dominio, así que una dirección numérica es un indicio claro de sitio falso.",
+    url_reason_punycode: "Esta dirección usa caracteres especiales que imitan letras normales. Los atacantes los emplean para que, a simple vista, un dominio falso parezca idéntico al real.",
+    url_reason_brand_subdomain: "Lee la dirección de derecha a izquierda. La parte que decide dónde estás es {domain}; todo lo que va delante es un subdominio, y quien controle {domain} puede crear tantos como quiera y con el nombre que quiera.",
+    url_reason_brand_in_subdomain: "La dirección sí contiene {brand}, pero solo como subdominio. Los sitios auténticos también usan subdominios, y justo por eso no demuestran nada: quien controle {domain} puede poner delante el nombre que le apetezca. Lo que decide dónde estás es {domain}, la parte justo antes de la primera barra.",
+    url_reason_hyphen: "El dominio real aquí es {domain}. Los atacantes encadenan nombres de marca con guiones para dar sensación de oficialidad; el sitio auténtico usaría sin más el dominio propio de la marca.",
+    url_reason_tld: "El dominio real aquí es {domain}. Su terminación (.{tld}) apenas la usan las organizaciones consolidadas y es muy popular entre los atacantes porque resulta baratísima de registrar.",
+    url_reason_long: "Fíjate en lo larga y enrevesada que es esta dirección: una ristra de palabras de más, guiones y caracteres sueltos alrededor de {domain}. Las páginas de acceso auténticas están en un dominio corto y sencillo; tanta longitud solo sirve para dejar el nombre real fuera de tu vista.",
+    url_reason_generic: "La parte que decide dónde estás de verdad es {domain}, el texto justo antes de la primera barra. Todo lo demás de la dirección puede maquillarse para resultar convincente.",
+    step_password_title: "Este formulario quería tu contraseña",
+    step_password_body: "Estabas a un paso de entregar tu contraseña a un atacante. Las organizaciones reales nunca te piden confirmar tu contraseña a través de un enlace en un correo. Ante la duda, entra en el sitio escribiendo tú la dirección.",
+    step_cc_title: "Este formulario pedía los datos de tu tarjeta",
+    step_cc_body: "Si hubieras introducido aquí el número de tu tarjeta, la fecha de caducidad y el código de seguridad, habrían ido directos a los delincuentes. Las empresas legítimas no recogen datos de pago a través de enlaces inesperados.",
+    step_download_title: "Esta descarga podría haber sido malware",
+    step_download_body: "Este archivo podría haber instalado software malicioso en tu dispositivo. Comprueba la extensión del archivo antes de abrir nada y descarga programas solo de fuentes de confianza.",
+    step_suspicious_link_title: "Este enlace no es lo que dice ser",
+    step_suspicious_link_body: "El texto del enlace dice {shown}, pero en realidad lleva a {actual}. Pasa el cursor sobre los enlaces para ver el destino real antes de hacer clic.",
+    step_brand_title: "Esta página se hace pasar por {brand}",
+    step_brand_body: "Se presenta como {brand}, pero la dirección pertenece a {domain}. Las grandes empresas no alojan sus páginas de acceso en dominios ajenos: que el nombre de la página no coincida con el de la barra de direcciones es una de las señales más claras de que es falsa.",
+    step_urgency_title: "La urgencia es una táctica de presión",
+    step_urgency_body: "«Actúa ya», plazos límite, amenazas de suspender tu cuenta… Los atacantes crean presión para que actúes antes de pensar. Las empresas reales rara vez exigen una acción inmediata; tómate tu tiempo cuando un mensaje te meta prisa.",
+    urgency_quote: "Esta página te ha presionado con: «{quote}»",
+    perm_mic_title: "Has cedido tu micrófono",
+    perm_mic_body: "Esta página puede escuchar a través de tu micrófono hasta que le retires el acceso. Un sitio de verdad te explica para qué necesita el micro: una llamada o una grabación que has iniciado tú.",
+    perm_webcam_title: "Has cedido tu cámara",
+    perm_webcam_body: "Esta página puede ver a través de tu cámara hasta que le retires el acceso. Permite el acceso a la cámara solo en sitios que hayas abierto por tu cuenta y donde una videollamada sea claramente lo esperado.",
+    perm_location_title: "Has compartido tu ubicación",
+    perm_location_body: "Esta página ya sabe dónde estás. Los sitios legítimos solo piden tu ubicación cuando es evidente que hace falta, por ejemplo para encontrar una tienda cercana, y siguen funcionando si la rechazas.",
+    perm_notification_title: "Has permitido las notificaciones",
+    perm_notification_body: "Esta página ya puede enviarte mensajes al escritorio, incluso después de cerrarla. Los atacantes aprovechan estas notificaciones para colarte falsas alertas de virus y arrastrarte a nuevas estafas.",
+    perm_clipboard_title: "Has dado acceso a tu portapapeles",
+    perm_clipboard_body: "En el portapapeles suele haber una contraseña, un número de tarjeta o una dirección de criptomonedas que acabas de copiar. Una página con acceso al portapapeles puede leerlo, o cambiar sin que te des cuenta lo que pegas.",
+    perm_extension_title: "Has instalado una extensión del navegador",
+    perm_extension_body: "Las extensiones pueden leer y modificar todas las páginas que visitas, incluidos tu correo y tu banco. Instálalas solo desde las tiendas oficiales y solo cuando sepas quién las publica.",
+    lesson_login_title: "El candado no significa que sea seguro",
+    lesson_login_body: "El icono del candado o «https» solo significa que la conexión está cifrada, no que el sitio sea auténtico. Los sitios de phishing también usan cifrado. Confía en el nombre del dominio, no en el candado.",
+    lesson_fraud_title: "Cómo proteger tu dinero",
+    lesson_fraud_body: "Nunca introduzcas datos de pago en una página a la que hayas llegado desde un correo o un mensaje. Entra por tu cuenta en la web o la aplicación oficial de la empresa, o llama al número que figura en el reverso de tu tarjeta.",
+    lesson_malware_title: "Verifica antes de descargar",
+    lesson_malware_body: "Los adjuntos y las descargas son una de las vías favoritas para colar malware en tu dispositivo. Confirma con el remitente por otro canal y desconfía de archivos como .exe, .zip o documentos que te pidan activar macros.",
+    lesson_fake_title: "Si parece demasiado bueno para ser verdad…",
+    lesson_fake_body: "Las páginas falsas imitan a marcas de confianza para conseguir tu clic, tus datos o tu confianza. Comprueba la dirección, busca detalles descuidados y, cuando algo no te cuadre, cierra la página y entra al sitio por tu cuenta.",
+    lesson_permission_title: "Cuidado con lo que permites",
+    lesson_permission_body: "Acabas de conceder a esta página un acceso que no debería tener. Los sitios legítimos explican por qué necesitan tu cámara, micrófono o ubicación antes de pedirlos. Concede solo permisos que entiendas del todo; puedes revisarlos en los ajustes del navegador.",
+    step_done_title: "Qué comprobar la próxima vez",
+    step_done_body: "Comprueba la dirección, cuestiona la urgencia, protege tus contraseñas y los datos de tu tarjeta, y piensa antes de descargar. Pulsa «Continuar» para seguir.",
+};
+exports["default"] = strings;
+
+
+/***/ }),
+
+/***/ "./src/i18n/locales/fr-FR.ts":
+/*!***********************************!*\
+  !*** ./src/i18n/locales/fr-FR.ts ***!
+  \***********************************/
+/***/ ((__unused_webpack_module, exports) => {
+
+"use strict";
+
+Object.defineProperty(exports, "__esModule", ({ value: true }));
+const strings = {
+    heading: "Il s'agissait d'une simulation de phishing",
+    intro: "Bonne nouvelle : ce n'était pas une vraie attaque. Prenez une minute pour repérer les signaux d'alerte qui vous ont échappé — la prochaine fois, cela pourrait vous éviter bien des ennuis.",
+    next: "Suivant",
+    back: "Retour",
+    skip: "Passer le tutoriel",
+    continue: "Continuer",
+    progress: "Étape {n} sur {total}",
+    arrow_hint: "L'adresse web se trouve ici, en haut",
+    step_url_title: "Vérifiez toujours l'adresse en premier",
+    step_url_body: "Regardez la barre d'adresse en haut de votre navigateur. L'adresse de cette page n'est pas celle de la véritable organisation — les attaquants comptent sur votre inattention. Avant de saisir, cliquer ou télécharger quoi que ce soit, lisez attentivement le nom de domaine.",
+    url_actual_label: "L'adresse sur laquelle vous vous trouviez",
+    url_reason_ip: "Cette adresse est une adresse IP brute, sans aucun nom d'entreprise. Les véritables organisations utilisent leur propre nom de domaine ; une adresse composée de chiffres est donc un signe fort de site frauduleux.",
+    url_reason_punycode: "Cette adresse utilise des caractères spéciaux qui imitent des lettres ordinaires. Les attaquants s'en servent pour qu'un faux nom de domaine paraisse identique au vrai au premier coup d'œil.",
+    url_reason_brand_subdomain: "Lisez l'adresse en partant de la droite, pas de la gauche. La partie qui détermine où vous êtes est {domain} ; tout ce qui la précède est un sous-domaine, et celui qui possède {domain} peut en créer autant qu'il veut, sous n'importe quel nom.",
+    url_reason_brand_in_subdomain: "L'adresse contient bien {brand}, mais uniquement en sous-domaine. Les vrais sites en utilisent aussi, et c'est précisément pour cela qu'ils ne prouvent rien : celui qui possède {domain} peut placer devant le nom qu'il souhaite. Ce qui détermine où vous êtes, c'est {domain}, la partie juste avant la première barre oblique.",
+    url_reason_hyphen: "Le véritable nom de domaine est ici {domain}. Les attaquants assemblent des noms de marque avec des traits d'union pour paraître officiels ; le site authentique utiliserait tout simplement le domaine de la marque.",
+    url_reason_tld: "Le véritable nom de domaine est ici {domain}. Sa terminaison (.{tld}) est rarement utilisée par les organisations établies et très prisée des attaquants, car son enregistrement ne coûte presque rien.",
+    url_reason_long: "Regardez la longueur et le fouillis de cette adresse : une succession de mots en trop, de tirets et de caractères aléatoires autour de {domain}. Les vraies pages de connexion tiennent sur un nom de domaine court et simple ; tout cet encombrement ne sert qu'à repousser le nom réel hors de votre champ de vision.",
+    url_reason_generic: "La partie qui détermine où vous vous trouvez réellement est {domain} — le texte situé juste avant la première barre oblique. Tout le reste de l'adresse peut être façonné pour paraître crédible.",
+    step_password_title: "Ce formulaire voulait votre mot de passe",
+    step_password_body: "Vous étiez à deux doigts de livrer votre mot de passe à un attaquant. Les véritables organisations ne vous demandent jamais de confirmer votre mot de passe via un lien reçu par e-mail. En cas de doute, ouvrez le site vous-même en saisissant son adresse.",
+    step_cc_title: "Ce formulaire demandait vos données bancaires",
+    step_cc_body: "Si vous aviez saisi ici votre numéro de carte, sa date d'expiration et son cryptogramme, ces informations seraient allées directement entre les mains de criminels. Les entreprises légitimes ne collectent pas de données de paiement via des liens inattendus.",
+    step_download_title: "Ce téléchargement aurait pu être un logiciel malveillant",
+    step_download_body: "Ce fichier aurait pu installer un logiciel malveillant sur votre appareil. Vérifiez l'extension du fichier avant d'ouvrir quoi que ce soit — et ne téléchargez des programmes que depuis des sources de confiance.",
+    step_suspicious_link_title: "Ce lien n'est pas ce qu'il prétend être",
+    step_suspicious_link_body: "Le texte du lien indique {shown}, mais il mène en réalité vers {actual}. Survolez les liens avec la souris pour afficher leur véritable destination avant de cliquer.",
+    step_brand_title: "Cette page se fait passer pour {brand}",
+    step_brand_body: "Elle se présente comme {brand}, mais l'adresse appartient à {domain}. Les grandes entreprises n'hébergent pas leurs pages de connexion sur des domaines sans rapport : un nom affiché sur la page qui ne correspond pas à celui de la barre d'adresse est l'un des signes les plus clairs d'une contrefaçon.",
+    step_urgency_title: "L'urgence est une tactique de pression",
+    step_urgency_body: "« Agissez maintenant », échéances imminentes, menaces de suspension de compte… Les attaquants créent un sentiment d'urgence pour que vous agissiez avant de réfléchir. Les vraies entreprises exigent rarement une action immédiate ; prenez le temps de la réflexion quand un message vous presse.",
+    urgency_quote: "Cette page a fait pression sur vous avec ce message : « {quote} »",
+    perm_mic_title: "Vous avez donné accès à votre microphone",
+    perm_mic_body: "Cette page peut désormais vous écouter via votre microphone tant que vous ne révoquez pas l'autorisation. Un site sérieux vous explique pourquoi il a besoin de votre microphone — pour un appel ou un enregistrement que vous avez lancé vous-même.",
+    perm_webcam_title: "Vous avez donné accès à votre caméra",
+    perm_webcam_body: "Cette page peut désormais vous voir via votre caméra tant que vous ne révoquez pas l'autorisation. N'autorisez l'accès à la caméra que sur un site que vous avez ouvert vous-même, où un appel vidéo est clairement attendu.",
+    perm_location_title: "Vous avez partagé votre position",
+    perm_location_body: "Cette page sait désormais où vous vous trouvez. Les sites légitimes ne demandent votre position que lorsque c'est manifestement nécessaire, par exemple pour trouver un magasin à proximité — et ils fonctionnent même si vous refusez.",
+    perm_notification_title: "Vous avez autorisé les notifications",
+    perm_notification_body: "Cette page peut désormais afficher des messages sur votre bureau, même une fois fermée. Les attaquants s'en servent pour diffuser de fausses alertes virus et vous attirer dans d'autres arnaques.",
+    perm_clipboard_title: "Vous avez donné accès à votre presse-papiers",
+    perm_clipboard_body: "Votre presse-papiers contient souvent un mot de passe, un numéro de carte ou une adresse de cryptomonnaie que vous venez de copier. Une page ayant accès au presse-papiers peut le lire — ou remplacer discrètement ce que vous collez.",
+    perm_extension_title: "Vous avez installé une extension de navigateur",
+    perm_extension_body: "Les extensions peuvent lire et modifier toutes les pages que vous visitez, y compris votre messagerie et votre banque. N'installez d'extensions que depuis les boutiques officielles, et uniquement lorsque vous savez qui les publie.",
+    lesson_login_title: "Le cadenas ne veut pas dire que c'est sûr",
+    lesson_login_body: "L'icône de cadenas ou la mention « https » signifie seulement que votre connexion est chiffrée — pas que le site est authentique. Les sites de phishing utilisent eux aussi le chiffrement. Fiez-vous au nom de domaine, pas au cadenas.",
+    lesson_fraud_title: "Comment protéger votre argent",
+    lesson_fraud_body: "Ne saisissez jamais de données de paiement sur une page ouverte depuis un e-mail ou un message. Ouvrez vous-même le site officiel de l'entreprise ou son application officielle, ou appelez le numéro au dos de votre carte.",
+    lesson_malware_title: "Vérifiez avant de télécharger",
+    lesson_malware_body: "Les pièces jointes et les téléchargements sont un moyen privilégié d'introduire un logiciel malveillant sur votre appareil. Confirmez auprès de l'expéditeur par un autre canal et méfiez-vous des types de fichiers comme .exe ou .zip, et des documents qui vous demandent d'activer les macros.",
+    lesson_fake_title: "Si c'est trop beau pour être vrai…",
+    lesson_fake_body: "Les fausses pages imitent des marques de confiance pour obtenir votre clic, vos données ou votre confiance. Vérifiez l'adresse, repérez les détails négligés et, si quelque chose vous semble anormal, fermez la page et rendez-vous sur le site par vous-même.",
+    lesson_permission_title: "Attention à ce que vous autorisez",
+    lesson_permission_body: "Vous venez d'accorder à cette page un accès qu'elle ne devrait pas avoir. Les sites légitimes expliquent pourquoi ils ont besoin de votre caméra, de votre microphone ou de votre position avant de les demander. N'accordez que les autorisations que vous comprenez parfaitement — vous pouvez les vérifier dans les paramètres de votre navigateur.",
+    step_done_title: "À vérifier la prochaine fois",
+    step_done_body: "Vérifiez l'adresse, méfiez-vous de l'urgence, protégez vos mots de passe et vos données bancaires, et réfléchissez avant de télécharger. Cliquez sur « Continuer » pour passer à la suite.",
+};
+exports["default"] = strings;
+
+
+/***/ }),
+
+/***/ "./src/i18n/locales/pt-BR.ts":
+/*!***********************************!*\
+  !*** ./src/i18n/locales/pt-BR.ts ***!
+  \***********************************/
+/***/ ((__unused_webpack_module, exports) => {
+
+"use strict";
+
+Object.defineProperty(exports, "__esModule", ({ value: true }));
+const strings = {
+    heading: "Isso foi uma simulação de phishing",
+    intro: "A boa notícia: não era um ataque de verdade. Reserve um minuto para ver os sinais de alerta que você deixou passar — na próxima vez, isso pode salvar você.",
+    next: "Avançar",
+    back: "Voltar",
+    skip: "Pular tutorial",
+    continue: "Continuar",
+    progress: "Etapa {n} de {total}",
+    arrow_hint: "O endereço do site está aqui em cima",
+    step_url_title: "Sempre confira o endereço primeiro",
+    step_url_body: "Observe a barra de endereços no topo do navegador. O endereço desta página não pertence à organização real — os golpistas contam com a sua desatenção. Antes de digitar, clicar ou baixar qualquer coisa, leia o nome do domínio com atenção.",
+    url_actual_label: "O endereço em que você estava",
+    url_reason_ip: "Este endereço é um IP numérico em vez do nome de uma empresa. Organizações de verdade usam o próprio domínio, então um endereço formado só por números é um forte indício de site falso.",
+    url_reason_punycode: "Este endereço usa caracteres especiais que imitam letras comuns. Os golpistas recorrem a eles para que um domínio falso pareça idêntico ao verdadeiro à primeira vista.",
+    url_reason_brand_subdomain: "Leia o endereço da direita para a esquerda. A parte que define onde você está é {domain}; tudo o que vem antes é um subdomínio, e quem for dono de {domain} pode criar quantos quiser, com o nome que quiser.",
+    url_reason_brand_in_subdomain: "O endereço realmente contém {brand} — mas só como subdomínio. Sites de verdade também usam subdomínios, e é justamente por isso que eles não provam nada: quem for dono de {domain} pode colocar qualquer nome na frente. O que define onde você está é {domain}, a parte logo antes da primeira barra.",
+    url_reason_hyphen: "O domínio de verdade aqui é {domain}. Os golpistas emendam nomes de marcas com hífens para parecer oficial; o site verdadeiro simplesmente usaria o domínio da própria marca.",
+    url_reason_tld: "O domínio de verdade aqui é {domain}. A terminação (.{tld}) raramente é usada por organizações estabelecidas e é popular entre golpistas porque custa pouco para registrar.",
+    url_reason_long: "Repare em como este endereço é longo e embolado: uma sequência de palavras a mais, hífens e caracteres soltos em volta de {domain}. Páginas de login de verdade ficam em um domínio curto e simples; todo esse excesso serve só para empurrar o nome real para fora do seu campo de visão.",
+    url_reason_generic: "A parte que define onde você realmente está é {domain} — o texto logo antes da primeira barra. Todo o resto do endereço pode ser montado para parecer convincente.",
+    step_password_title: "Este formulário queria a sua senha",
+    step_password_body: "Você estava a um passo de entregar a sua senha a um golpista. Organizações de verdade nunca pedem para confirmar a senha por um link recebido por e-mail. Na dúvida, acesse o site por conta própria digitando o endereço.",
+    step_cc_title: "Este formulário pedia os dados do seu cartão",
+    step_cc_body: "Se você tivesse digitado aqui o número do cartão, a validade e o código de segurança, eles iriam parar direto nas mãos de criminosos. Empresas legítimas não coletam dados de pagamento por links inesperados.",
+    step_download_title: "Este download poderia ter sido um malware",
+    step_download_body: "Este arquivo poderia ter instalado um software malicioso no seu dispositivo. Confira a extensão do arquivo antes de abrir qualquer coisa — e baixe programas apenas de fontes confiáveis.",
+    step_suspicious_link_title: "Este link não é o que parece",
+    step_suspicious_link_body: "O texto do link diz {shown}, mas na verdade ele leva para {actual}. Passe o mouse sobre os links para ver o destino real antes de clicar.",
+    step_brand_title: "Esta página se passa por {brand}",
+    step_brand_body: "Ela se apresenta como {brand}, mas o endereço pertence a {domain}. Empresas grandes não colocam as páginas de login delas em domínios sem relação nenhuma: quando o nome na página não bate com o nome na barra de endereços, esse é um dos sinais mais claros de falsificação.",
+    step_urgency_title: "Urgência é uma tática de pressão",
+    step_urgency_body: "\"Aja agora\", prazos, ameaças de suspensão da conta — os golpistas criam pressão para você agir antes de pensar. Empresas de verdade raramente exigem ação imediata; vá com calma quando uma mensagem tentar apressar você.",
+    urgency_quote: "Esta página pressionou você com: \"{quote}\"",
+    perm_mic_title: "Você entregou o seu microfone",
+    perm_mic_body: "Esta página agora pode ouvir pelo seu microfone até você revogar o acesso. Um site de verdade deixa claro por que precisa do microfone — para uma chamada ou uma gravação que você mesmo iniciou.",
+    perm_webcam_title: "Você entregou a sua câmera",
+    perm_webcam_body: "Esta página agora pode enxergar pela sua câmera até você revogar o acesso. Só permita o acesso à câmera em um site que você mesmo abriu, onde uma chamada de vídeo é claramente esperada.",
+    perm_location_title: "Você compartilhou a sua localização",
+    perm_location_body: "Esta página agora sabe onde você está. Sites legítimos só pedem a sua localização quando ela é claramente necessária, como para encontrar uma loja próxima — e continuam funcionando se você recusar.",
+    perm_notification_title: "Você permitiu notificações",
+    perm_notification_body: "Esta página agora pode enviar mensagens direto para a sua tela, mesmo depois que você a fechar. Os golpistas usam isso para exibir alertas falsos de vírus e atrair você para novos golpes.",
+    perm_clipboard_title: "Você deu acesso à sua área de transferência",
+    perm_clipboard_body: "A sua área de transferência muitas vezes guarda uma senha, um número de cartão ou um endereço de criptomoeda que você acabou de copiar. Uma página com esse acesso pode ler tudo isso — ou trocar discretamente o que você cola.",
+    perm_extension_title: "Você instalou uma extensão do navegador",
+    perm_extension_body: "Extensões podem ler e alterar todas as páginas que você visita, incluindo o seu e-mail e o seu banco. Instale extensões apenas das lojas oficiais e somente quando souber quem as publica.",
+    lesson_login_title: "O cadeado não significa que é seguro",
+    lesson_login_body: "O ícone de cadeado ou o \"https\" só significa que a conexão é criptografada — não que o site seja verdadeiro. Sites de phishing também usam criptografia. Confie no nome do domínio, não no cadeado.",
+    lesson_fraud_title: "Como proteger o seu dinheiro",
+    lesson_fraud_body: "Nunca informe dados de pagamento em uma página que você abriu a partir de um e-mail ou mensagem. Acesse por conta própria o site ou o aplicativo oficial da empresa, ou ligue para o número no verso do seu cartão.",
+    lesson_malware_title: "Verifique antes de baixar",
+    lesson_malware_body: "Anexos e downloads são uma das formas preferidas de instalar malware no seu dispositivo. Confirme com o remetente por outro canal e desconfie de tipos de arquivo como .exe, .zip ou documentos que peçam para ativar macros.",
+    lesson_fake_title: "Se parece bom demais para ser verdade…",
+    lesson_fake_body: "Páginas falsas imitam marcas confiáveis para conseguir o seu clique, os seus dados ou a sua confiança. Confira o endereço, preste atenção a detalhes descuidados e, quando algo parecer estranho, feche a página e acesse o site por conta própria.",
+    lesson_permission_title: "Cuidado com o que você permite",
+    lesson_permission_body: "Você acabou de conceder a esta página um acesso que ela não deveria ter. Sites legítimos explicam por que precisam da câmera, do microfone ou da localização antes de pedir. Conceda apenas permissões que você entenda totalmente — você pode revisá-las nas configurações do navegador.",
+    step_done_title: "O que conferir da próxima vez",
+    step_done_body: "Confira o endereço, questione a urgência, proteja as suas senhas e os dados do cartão e pense antes de baixar. Clique em Continuar para seguir em frente.",
+};
+exports["default"] = strings;
+
+
+/***/ }),
+
+/***/ "./src/i18n/locales/pt-PT.ts":
+/*!***********************************!*\
+  !*** ./src/i18n/locales/pt-PT.ts ***!
+  \***********************************/
+/***/ ((__unused_webpack_module, exports) => {
+
+"use strict";
+
+Object.defineProperty(exports, "__esModule", ({ value: true }));
+const strings = {
+    heading: "Isto foi uma simulação de phishing",
+    intro: "A boa notícia: não foi um ataque real. Dedique um minuto a ver os sinais de alerta que lhe escaparam — para a próxima, podem fazer toda a diferença.",
+    next: "Seguinte",
+    back: "Anterior",
+    skip: "Ignorar tutorial",
+    continue: "Continuar",
+    progress: "Passo {n} de {total}",
+    arrow_hint: "O endereço do site está aqui em cima",
+    step_url_title: "Verifique sempre primeiro o endereço",
+    step_url_body: "Repare na barra de endereço no topo do navegador. O endereço desta página não pertence à organização verdadeira — os atacantes contam com a sua falta de atenção. Antes de escrever, clicar ou transferir o que quer que seja, leia o nome do domínio com atenção.",
+    url_actual_label: "O endereço em que se encontrava",
+    url_reason_ip: "Este endereço é um endereço IP numérico em vez do nome de uma empresa. As organizações verdadeiras usam o seu próprio domínio, pelo que um endereço numérico é um forte indício de um site falso.",
+    url_reason_punycode: "Este endereço usa caracteres especiais que imitam letras comuns. Os atacantes recorrem a eles para que um domínio falso pareça, à primeira vista, idêntico ao verdadeiro.",
+    url_reason_brand_subdomain: "Leia o endereço a partir da direita, não da esquerda. A parte que determina onde está é {domain}; tudo o que vem antes é um subdomínio, e quem for dono de {domain} pode criar tantos quantos quiser, com o nome que quiser.",
+    url_reason_brand_in_subdomain: "O endereço contém mesmo {brand} — mas apenas como subdomínio. Os sites verdadeiros também usam subdomínios e é precisamente por isso que estes nada provam: quem for dono de {domain} pode colocar à frente o nome que entender. O que determina onde está é {domain}, a parte imediatamente antes da primeira barra.",
+    url_reason_hyphen: "O domínio verdadeiro aqui é {domain}. Os atacantes juntam nomes de marcas com hífenes para parecerem oficiais; o site genuíno usaria simplesmente o domínio da própria marca.",
+    url_reason_tld: "O domínio verdadeiro aqui é {domain}. A sua terminação (.{tld}) raramente é usada por organizações estabelecidas e é popular entre os atacantes por ser barata de registar.",
+    url_reason_long: "Repare em como este endereço é longo e confuso: uma sucessão de palavras a mais, hífenes e caracteres soltos à volta de {domain}. As páginas de autenticação verdadeiras estão num domínio curto e simples; todo este excesso serve apenas para afastar o nome real do seu campo de visão.",
+    url_reason_generic: "A parte que determina onde realmente está é {domain} — o texto imediatamente antes da primeira barra. Todo o resto do endereço pode ser fabricado para parecer convincente.",
+    step_password_title: "Este formulário queria a sua palavra-passe",
+    step_password_body: "Esteve a um passo de entregar a sua palavra-passe a um atacante. As organizações verdadeiras nunca lhe pedem para confirmar a palavra-passe através de uma hiperligação num e-mail. Em caso de dúvida, aceda diretamente ao site, escrevendo o endereço.",
+    step_cc_title: "Este formulário pedia os dados do seu cartão",
+    step_cc_body: "Se tivesse introduzido aqui o número do cartão, a validade e o código de segurança, teriam ido parar diretamente às mãos de criminosos. As empresas legítimas não recolhem dados de pagamento através de hiperligações inesperadas.",
+    step_download_title: "Esta transferência podia ter sido malware",
+    step_download_body: "Este ficheiro podia ter instalado software malicioso no seu dispositivo. Verifique a extensão do ficheiro antes de abrir o que quer que seja — e transfira programas apenas de fontes fidedignas.",
+    step_suspicious_link_title: "Esta hiperligação não é o que aparenta",
+    step_suspicious_link_body: "O texto da hiperligação diz {shown}, mas na realidade leva a {actual}. Passe o cursor sobre as hiperligações para pré-visualizar o destino real antes de clicar.",
+    step_brand_title: "Esta página faz-se passar por {brand}",
+    step_brand_body: "Apresenta-se como {brand}, mas o endereço pertence a {domain}. As grandes empresas não alojam as páginas de autenticação em domínios sem qualquer relação: quando o nome na página não corresponde ao nome na barra de endereço, esse é um dos sinais mais claros de falsificação.",
+    step_urgency_title: "A urgência é uma tática de pressão",
+    step_urgency_body: "«Aja já», prazos, ameaças de suspensão da conta — os atacantes criam pressão para que aja antes de pensar. As empresas verdadeiras raramente exigem uma ação imediata; abrande sempre que uma mensagem lhe transmitir urgência.",
+    urgency_quote: "Esta página exerceu pressão sobre si com: «{quote}»",
+    perm_mic_title: "Deu acesso ao seu microfone",
+    perm_mic_body: "Esta página pode agora ouvir através do seu microfone até que revogue o acesso. Um site verdadeiro explica porque precisa do microfone — para uma chamada ou uma gravação iniciada por si.",
+    perm_webcam_title: "Deu acesso à sua câmara",
+    perm_webcam_body: "Esta página pode agora ver através da sua câmara até que revogue o acesso. Permita o acesso à câmara apenas em sites que abriu por iniciativa própria, onde uma videochamada seja claramente esperada.",
+    perm_location_title: "Partilhou a sua localização",
+    perm_location_body: "Esta página sabe agora onde está. Os sites legítimos só pedem a localização quando é claramente necessária, como para encontrar uma loja próxima — e continuam a funcionar se recusar.",
+    perm_notification_title: "Permitiu notificações",
+    perm_notification_body: "Esta página pode agora enviar mensagens para o seu ambiente de trabalho, mesmo depois de a fechar. Os atacantes usam-nas para apresentar falsos alertas de vírus e servir de isco para novas burlas.",
+    perm_clipboard_title: "Deu acesso à sua área de transferência",
+    perm_clipboard_body: "A área de transferência guarda muitas vezes uma palavra-passe, um número de cartão ou um endereço de criptomoeda que acabou de copiar. Uma página com este acesso pode lê-la — ou trocar discretamente o que cola.",
+    perm_extension_title: "Instalou uma extensão do navegador",
+    perm_extension_body: "As extensões podem ler e alterar todas as páginas que visita, incluindo o seu e-mail e o seu banco. Instale-as apenas a partir de lojas oficiais e só quando souber quem as publica.",
+    lesson_login_title: "O cadeado não significa que é seguro",
+    lesson_login_body: "Um ícone de cadeado ou o «https» significa apenas que a ligação é encriptada — não que o site seja genuíno. Os sites de phishing também usam encriptação. Confie no nome do domínio, não no cadeado.",
+    lesson_fraud_title: "Como proteger o seu dinheiro",
+    lesson_fraud_body: "Nunca introduza dados de pagamento numa página a que chegou a partir de um e-mail ou mensagem. Aceda ao site ou à aplicação oficial da empresa, ou ligue para o número no verso do seu cartão.",
+    lesson_malware_title: "Verifique antes de transferir",
+    lesson_malware_body: "Os anexos e as transferências são uma via preferida para introduzir malware no seu dispositivo. Confirme com o remetente por outro canal e desconfie de tipos de ficheiro como .exe ou .zip, ou de documentos que peçam para ativar macros.",
+    lesson_fake_title: "Se parece demasiado bom para ser verdade…",
+    lesson_fake_body: "As páginas falsas imitam marcas de confiança para obter o seu clique, os seus dados ou a sua confiança. Verifique o endereço, procure pormenores descuidados e, quando algo lhe parecer estranho, feche a página e aceda diretamente ao site.",
+    lesson_permission_title: "Cuidado com o que permite",
+    lesson_permission_body: "Acabou de conceder a esta página um acesso que ela não devia ter. Os sites legítimos explicam porque precisam da câmara, do microfone ou da localização antes de os pedirem. Conceda apenas permissões que compreenda totalmente — pode revê-las nas definições do navegador.",
+    step_done_title: "O que verificar da próxima vez",
+    step_done_body: "Verifique o endereço, questione a urgência, proteja as suas palavras-passe e os dados do cartão e pense antes de transferir. Clique em Continuar para prosseguir.",
+};
+exports["default"] = strings;
+
+
+/***/ }),
+
+/***/ "./src/i18n/locales/ro-RO.ts":
+/*!***********************************!*\
+  !*** ./src/i18n/locales/ro-RO.ts ***!
+  \***********************************/
+/***/ ((__unused_webpack_module, exports) => {
+
+"use strict";
+
+Object.defineProperty(exports, "__esModule", ({ value: true }));
+const strings = {
+    heading: "Aceasta a fost o simulare de phishing",
+    intro: "Vestea bună: nu a fost un atac real. Ia-ți un minut ca să vezi semnele de avertizare pe care le-ai ratat — data viitoare te-ar putea salva.",
+    next: "Înainte",
+    back: "Înapoi",
+    skip: "Sari peste tutorial",
+    continue: "Continuă",
+    progress: "Pasul {n} din {total}",
+    arrow_hint: "Adresa web este aici sus",
+    step_url_title: "Verifică întotdeauna mai întâi adresa",
+    step_url_body: "Uită-te la bara de adrese din partea de sus a browserului. Adresa acestei pagini nu aparține organizației reale — atacatorii se bazează pe faptul că nu te uiți. Înainte să tastezi, să dai clic sau să descarci ceva, citește cu atenție numele domeniului.",
+    url_actual_label: "Adresa pe care te aflai",
+    url_reason_ip: "Această adresă este o adresă IP, adică un șir de cifre, nu numele unei companii. Organizațiile reale folosesc propriul domeniu, așa că o adresă numerică e un semn clar de site fals.",
+    url_reason_punycode: "Această adresă folosește caractere speciale care imită literele obișnuite. Atacatorii le folosesc pentru ca un domeniu fals să pară, la prima vedere, identic cu cel real.",
+    url_reason_brand_subdomain: "Citește adresa de la dreapta la stânga. Partea care decide unde te afli este {domain}; tot ce apare înaintea ei este un subdomeniu, iar cine deține {domain} poate crea oricâte vrea, cu ce nume vrea.",
+    url_reason_brand_in_subdomain: "Adresa chiar conține {brand} — dar doar ca subdomeniu. Și site-urile reale folosesc subdomenii, tocmai de aceea ele nu dovedesc nimic: cine deține {domain} poate pune orice nume în fața lui. Ce decide unde te afli este {domain}, partea aflată imediat înaintea primei bare oblice.",
+    url_reason_hyphen: "Domeniul real de aici este {domain}. Atacatorii lipesc nume de branduri cu cratime ca adresa să pară oficială; site-ul autentic ar folosi pur și simplu domeniul propriu al brandului.",
+    url_reason_tld: "Domeniul real de aici este {domain}. Terminația lui (.{tld}) e rar folosită de organizațiile consacrate și e populară printre atacatori, pentru că se înregistrează ieftin.",
+    url_reason_long: "Uită-te cât de lungă și de încâlcită este adresa: un șir de cuvinte în plus, cratime și caractere aleatorii în jurul lui {domain}. Paginile de autentificare reale stau pe un domeniu scurt și simplu — lungimea și dezordinea sunt acolo ca să împingă numele adevărat departe de ochii tăi.",
+    url_reason_generic: "Partea care decide unde te afli cu adevărat este {domain} — textul aflat imediat înaintea primei bare oblice. Tot restul adresei poate fi făcut să pară convingător.",
+    step_password_title: "Acest formular îți cerea parola",
+    step_password_body: "Erai la un pas de a-i da parola unui atacator. Organizațiile reale nu îți cer niciodată să îți confirmi parola printr-un link dintr-un e-mail. Când ai îndoieli, deschide chiar tu site-ul, tastând adresa în browser.",
+    step_cc_title: "Acest formular cerea datele cardului",
+    step_cc_body: "Dacă ai fi introdus aici numărul cardului, data expirării și codul de securitate, ele ar fi ajuns direct la infractori. Companiile legitime nu colectează date de plată prin linkuri neașteptate.",
+    step_download_title: "Această descărcare putea fi malware",
+    step_download_body: "Acest fișier ar fi putut instala software rău-intenționat pe dispozitivul tău. Verifică extensia fișierului înainte să deschizi orice — și descarcă programe doar din surse de încredere.",
+    step_suspicious_link_title: "Acest link nu este ceea ce pretinde",
+    step_suspicious_link_body: "Textul linkului spune {shown}, dar de fapt duce la {actual}. Treci cu mouse-ul peste linkuri ca să vezi destinația reală înainte să dai clic.",
+    step_brand_title: "Această pagină se dă drept {brand}",
+    step_brand_body: "Se prezintă ca {brand}, dar adresa aparține de {domain}. Companiile mari nu își pun paginile de autentificare pe domenii care nu au legătură cu ele — un nume pe pagină care nu se potrivește cu numele din bara de adrese este unul dintre cele mai clare semne de fals.",
+    step_urgency_title: "Urgența este o tactică de presiune",
+    step_urgency_body: "„Acționează acum”, termene-limită, amenințări cu suspendarea contului — atacatorii creează presiune ca să acționezi înainte să gândești. Companiile reale cer rareori acțiuni imediate; încetinește când un mesaj te grăbește.",
+    urgency_quote: "Această pagină a pus presiune pe tine cu mesajul: „{quote}”",
+    perm_mic_title: "Ai dat acces la microfonul tău",
+    perm_mic_body: "De acum, această pagină te poate asculta prin microfon până când îi retragi accesul. Un site serios îți spune de ce are nevoie de microfon — pentru un apel sau o înregistrare pornită chiar de tine.",
+    perm_webcam_title: "Ai dat acces la camera ta",
+    perm_webcam_body: "De acum, această pagină te poate vedea prin cameră până când îi retragi accesul. Permite accesul la cameră doar pe site-uri pe care le-ai deschis chiar tu și unde un apel video are sens.",
+    perm_location_title: "Ți-ai dezvăluit locația",
+    perm_location_body: "Această pagină știe acum unde te afli. Site-urile legitime îți cer locația doar când e evident necesară, de exemplu ca să găsești un magazin din apropiere — și funcționează în continuare dacă refuzi.",
+    perm_notification_title: "Ai permis notificările",
+    perm_notification_body: "Această pagină îți poate trimite acum mesaje direct pe desktop, chiar și după ce o închizi. Atacatorii le folosesc pentru alerte false de viruși și ca să te atragă în alte escrocherii.",
+    perm_clipboard_title: "Ai dat acces la clipboard",
+    perm_clipboard_body: "În clipboard se află adesea o parolă, un număr de card sau o adresă crypto pe care tocmai ai copiat-o. O pagină cu acces la clipboard poate vedea tot ce ai copiat — sau poate schimba pe furiș ce lipești.",
+    perm_extension_title: "Ai instalat o extensie de browser",
+    perm_extension_body: "Extensiile pot citi și modifica fiecare pagină pe care o vizitezi, inclusiv e-mailul și contul tău bancar. Instalează-le doar din magazinele oficiale și doar când știi cine le publică.",
+    lesson_login_title: "Lacătul nu înseamnă că e sigur",
+    lesson_login_body: "Pictograma cu lacăt sau „https” înseamnă doar că conexiunea este criptată — nu că site-ul este autentic. Și site-urile de phishing folosesc criptare. Ai încredere în numele domeniului, nu în lacăt.",
+    lesson_fraud_title: "Cum îți protejezi banii",
+    lesson_fraud_body: "Nu introduce niciodată date de plată pe o pagină la care ai ajuns dintr-un e-mail sau mesaj. Intră chiar tu pe site-ul oficial al companiei sau în aplicația ei ori sună la numărul de pe spatele cardului.",
+    lesson_malware_title: "Verifică înainte să descarci",
+    lesson_malware_body: "Atașamentele și descărcările sunt o metodă preferată de a strecura malware pe dispozitivul tău. Confirmă cu expeditorul printr-un alt canal și fii precaut cu tipuri de fișiere precum .exe, .zip sau cu documente care îți cer să activezi macrocomenzi.",
+    lesson_fake_title: "Dacă pare prea frumos ca să fie adevărat…",
+    lesson_fake_body: "Paginile false imită branduri de încredere pentru a-ți obține clicul, datele sau încrederea. Verifică adresa, caută greșeli și detalii lucrate neglijent, iar când ceva pare în neregulă, închide pagina și intră chiar tu pe site.",
+    lesson_permission_title: "Ai grijă ce permiți",
+    lesson_permission_body: "Tocmai ai acordat acestei pagini un acces pe care nu ar trebui să îl aibă. Site-urile legitime explică de ce au nevoie de camera, microfonul sau locația ta înainte să ți le ceară. Acordă doar permisiuni pe care le înțelegi pe deplin — le poți revizui în setările browserului.",
+    step_done_title: "Ce să verifici data viitoare",
+    step_done_body: "Verifică adresa, pune la îndoială urgența, protejează-ți parolele și datele cardului și gândește-te înainte să descarci. Apasă Continuă pentru a merge mai departe.",
+};
+exports["default"] = strings;
+
+
+/***/ }),
+
+/***/ "./src/tutorial/AttackDetector.ts":
+/*!****************************************!*\
+  !*** ./src/tutorial/AttackDetector.ts ***!
+  \****************************************/
+/***/ ((__unused_webpack_module, exports, __webpack_require__) => {
+
+"use strict";
+
+Object.defineProperty(exports, "__esModule", ({ value: true }));
+exports.scanPage = void 0;
+const Identity_1 = __webpack_require__(/*! ./Identity */ "./src/tutorial/Identity.ts");
+const UrlAnalyzer_1 = __webpack_require__(/*! ./UrlAnalyzer */ "./src/tutorial/UrlAnalyzer.ts");
+const MALWARE_EVENTS = ["download_file_event", "file_opened", "file_open", "attachment_opened", "file_download"];
+const PERMISSION_EVENTS = {
+    "mic_accepted": "mic",
+    "webcam_accepted": "webcam",
+    "location_accepted": "location",
+    "notification_accepted": "notification",
+    "clipboard_accepted": "clipboard",
+    "extension_installed": "extension",
+};
+// Phishing pages are usually sloppy clones: inputs outside of any <form>,
+// randomised attribute names, <div> elements acting as buttons and text
+// split across nested spans. Every heuristic below therefore works from
+// what the user can actually see rather than from well-formed markup.
+const PASSWORD_PATTERN = /(password|passwd|pwd|passcode|senha|parol|parola|contrasenya|contrase|mot\s*de\s*passe|passwort|kennwort|κωδικ)/i;
+const OTP_PATTERN = /(one[-\s]?time|otp|2fa|two[-\s]?factor|verification\s*code|security\s*code|auth(entication)?\s*code|sms\s*code|cod\s*(de\s*)?verificare|código|code\s*de\s*validation|bestätigungscode)/i;
+const CC_PATTERN = /(card\s*number|cardnumber|creditcard|credit\s*card|debit\s*card|cc[-_\s]?num|numar\s*card|número\s*de\s*tarjeta|numéro\s*de\s*carte|kartennummer|\bcvc\b|\bcvv\b|\bcsc\b|expir|validade|caducidad|vencimiento|ablauf|mm\s*\/\s*yy|iban|sort\s*code|routing\s*number)/i;
+const DOWNLOAD_TEXT_PATTERN = /(^|[^\p{L}])(download|descarcă|descarca|descarga|descargar|descarrega|baixar|baixe|transferir|télécharger|téléchargez|herunterladen|download(en)?|λήψη|κατεβάστε|open\s*(the\s*)?(file|document|attachment)|view\s*document|get\s*(the\s*)?file)([^\p{L}]|$)/iu;
+const DOWNLOAD_EXTENSION_PATTERN = /\.(exe|zip|rar|7z|iso|dmg|apk|msi|scr|bat|cmd|com|jar|vbs|ps1|hta|lnk|docm|xlsm|pptm|xlsb)($|\?|#)/i;
+// Pressure tactics in every locale the tutorial supports: en, ro, es, ca,
+// pt, fr, de and el. Matching is accent-insensitive for the Latin scripts
+// because phishing kits routinely drop diacritics.
+const URGENCY_PATTERN = new RegExp([
+    // English
+    "urgent", "immediately", "right now", "as soon as possible", "act now", "last chance",
+    "final (notice|warning|reminder)", "verify (now|immediately|your account)", "confirm (now|immediately)",
+    "expires? (today|soon|within|in)", "failure to (do so|respond|comply)", "avoid (suspension|deactivation)",
+    // Romanian
+    "urgent", "imediat", "de urgen[tț]a", "c[aâ]t mai repede", "ultima [sș]ans[aă]",
+    "contul (t[aă]u )?(va fi )?(suspendat|blocat|[iî]nchis|dezactivat)", "expir[aă]", "[iî]n termen de",
+    // Spanish (ES + LATAM)
+    "urgente", "inmediatamente", "de inmediato", "ahora mismo", "[uú]ltima oportunidad",
+    "(su|tu) cuenta ser[aá] (suspendida|bloqueada|cerrada|desactivada)", "caducar[aá]?", "vence hoy",
+    "antes de que", "verifica(r)? (ahora|de inmediato)",
+    // Catalan
+    "urgent", "immediatament", "ara mateix", "[uú]ltima oportunitat",
+    "el (teu |vostre )?compte ser[aà] (suspes|susp[eè]s|blocat|tancat)", "caduca", "abans que",
+    // Portuguese (BR + PT)
+    "urgente", "imediatamente", "com urg[eê]ncia", "agora mesmo", "[uú]ltima (chance|oportunidade)",
+    "(a )?sua conta ser[aá] (suspensa|bloqueada|encerrada|desativada)", "expira", "dentro de",
+    // French
+    "urgent", "imm[ée]diatement", "d[eè]s maintenant", "sans d[ée]lai", "derni[eè]re chance",
+    "votre compte sera (suspendu|bloqu[ée]|ferm[ée]|d[ée]sactiv[ée])", "expire", "avant le",
+    // German
+    "dringend", "umgehend", "sofort", "unverz[uü]glich", "letzte (chance|m[oö]glichkeit)",
+    "ihr konto wird (gesperrt|deaktiviert|geschlossen)", "l[aä]uft ab", "innerhalb von", "abgelaufen",
+    // Greek
+    "[εέ]πειγον", "[αά]μεσα", "αμ[εέ]σως", "τελευτα[ιί]α ευκαιρ[ιί]α",
+    "ο λογαριασμ[οό]ς σας θα (ανασταλε[ιί]|απενεργοποιηθε[ιί]|κλε[ιί]σει)", "αναστολ[ηή]", "λ[ηή]γει", "εντ[οό]ς",
+    // Language-agnostic deadline shapes
+    // Deadlines only count when the sentence frames them as one. A bare
+    // "2 days" matches delivery estimates and warranty text, not pressure.
+    "(within|in|expires? in|only|last|remaining|left)\\s+\\d+\\s*(hours?|minutes?|days?)",
+    "(in|[iî]n termen de|dentro de|en|dans|innerhalb von|εντ[οό]ς)\\s+\\d+\\s*(ore|zile|horas|d[ií]as|hores|dies|heures|jours|stunden|tagen|[ωώ]ρες|μ[εέ]ρες)",
+    "\\b24\\s*(hours?|h|ore|horas|hores|heures|stunden|[ωώ]ρες)\\b",
+].join("|"), "i");
+const URL_LIKE_TEXT_PATTERN = /^(https?:\/\/)?(www\.)?[a-z0-9][a-z0-9-]*(\.[a-z0-9][a-z0-9-]*)+(\/\S*)?$/i;
+const INLINE_TAGS = ["SPAN", "B", "STRONG", "EM", "I", "U", "SMALL", "LABEL", "A", "FONT", "MARK", "CODE"];
+const IGNORED_TAGS = ["SCRIPT", "STYLE", "NOSCRIPT", "TEMPLATE", "SVG"];
+const isVisible = (element) => {
+    if (!element.isConnected) {
+        return false;
+    }
+    const rect = element.getBoundingClientRect();
+    if (!rect.width && !rect.height) {
+        return false;
+    }
+    const style = window.getComputedStyle(element);
+    return style.visibility !== "hidden" && style.display !== "none" && style.opacity !== "0";
+};
+const isIgnored = (element) => {
+    while (element) {
+        if (IGNORED_TAGS.indexOf(element.tagName) !== -1 || element.hasAttribute("data-ignore")) {
+            return true;
+        }
+        element = element.parentElement;
+    }
+    return false;
+};
+// NodeFilter.SHOW_TEXT, spelled out so the module works without the global.
+const SHOW_TEXT = 4;
+const text = (value) => (value || "").replace(/\s+/g, " ").trim();
+/**
+ * Collects every piece of text that describes an input: its own attributes,
+ * any associated or wrapping label, ARIA labels and the visible text that
+ * immediately precedes it. Cloned phishing pages rarely keep meaningful
+ * name/id attributes, so the surrounding copy is often the only clue.
+ *
+ * @param {HTMLInputElement} input - The input to describe.
+ * @returns {string} - All descriptive text found for the input.
+ */
+const describeField = (input) => {
+    const parts = [
+        input.name, input.id, input.placeholder, input.className, input.type,
+        input.getAttribute("autocomplete"), input.getAttribute("aria-label"), input.getAttribute("title"),
+        input.getAttribute("data-name"), input.getAttribute("data-testid"), input.getAttribute("inputmode"),
+    ].map(text);
+    const labelledBy = input.getAttribute("aria-labelledby");
+    if (labelledBy) {
+        labelledBy.split(/\s+/).forEach(id => { var _a; return parts.push(text((_a = input.ownerDocument.getElementById(id)) === null || _a === void 0 ? void 0 : _a.textContent)); });
+    }
+    if (input.id) {
+        input.ownerDocument.querySelectorAll(`label[for="${CSS.escape(input.id)}"]`).forEach(label => parts.push(text(label.textContent)));
+    }
+    const wrappingLabel = input.closest("label");
+    if (wrappingLabel) {
+        parts.push(text(wrappingLabel.textContent));
+    }
+    // The visible copy just before the field, e.g. a <div> acting as a label.
+    let previous = input.previousElementSibling;
+    let hops = 0;
+    while (previous && hops < 2) {
+        if (!previous.querySelector("input, select, textarea")) {
+            parts.push(text(previous.textContent).slice(0, 60));
+        }
+        previous = previous.previousElementSibling;
+        hops++;
+    }
+    if (input.parentElement) {
+        parts.push(text(input.parentElement.getAttribute("class")));
+    }
+    return parts.filter(Boolean).join(" ");
+};
+const isPasswordField = (input) => {
+    if (input.type === "password") {
+        return true;
+    }
+    // Some kits mask the field themselves to dodge password managers.
+    const description = describeField(input);
+    return PASSWORD_PATTERN.test(description) && !OTP_PATTERN.test(description);
+};
+const isCreditCardField = (input) => {
+    if ((input.getAttribute("autocomplete") || "").indexOf("cc-") === 0) {
+        return true;
+    }
+    const description = describeField(input);
+    if (CC_PATTERN.test(description)) {
+        return true;
+    }
+    // A 16-19 digit numeric field is a card number in all but name.
+    const maxLength = input.maxLength;
+    return (input.inputMode === "numeric" || input.type === "tel") && maxLength >= 14 && maxLength <= 19;
+};
+/**
+ * Finds the block that visually groups the given fields. Prefers a real
+ * <form>, otherwise walks up until the ancestor holds every field but is
+ * still smaller than most of the viewport.
+ *
+ * @param {HTMLElement[]} fields - The fields that belong together.
+ * @returns {HTMLElement | null} - The container to highlight.
+ */
+const groupContainer = (fields) => {
+    if (!fields.length) {
+        return null;
+    }
+    const form = fields[0].closest("form");
+    if (form) {
+        return form;
+    }
+    const viewportArea = window.innerWidth * window.innerHeight;
+    let container = fields[0].parentElement;
+    let best = fields[0];
+    while (container && container !== document.body) {
+        const rect = container.getBoundingClientRect();
+        if (rect.width * rect.height > viewportArea * 0.8) {
+            break;
+        }
+        best = container;
+        if (fields.every(field => container.contains(field)) && container.querySelector("button, input[type='submit'], [role='button']")) {
+            return container;
+        }
+        container = container.parentElement;
+    }
+    return best;
+};
+const collectInputs = (doc) => {
+    return Array.from(doc.querySelectorAll("input")).filter(input => {
+        return input.type !== "hidden" && !isIgnored(input) && isVisible(input);
+    });
+};
+const findDownloadElements = (doc) => {
+    const selector = "a, button, [role='button'], [onclick], input[type='button'], input[type='submit'], [class*='btn'], [class*='button'], [class*='download'], [id*='download']";
+    const found = [];
+    doc.querySelectorAll(selector).forEach(node => {
+        const element = node;
+        if (isIgnored(element) || !isVisible(element) || found.some(other => other.contains(element))) {
+            return;
+        }
+        const href = element.getAttribute("href") || element.getAttribute("data-href") || element.getAttribute("data-url") || "";
+        const label = text(element.textContent) || text(element.getAttribute("value")) || text(element.getAttribute("aria-label"));
+        if (element.hasAttribute("download") || DOWNLOAD_EXTENSION_PATTERN.test(href) || DOWNLOAD_TEXT_PATTERN.test(label)) {
+            found.push(element);
+        }
+    });
+    return found;
+};
+/**
+ * Reduces a hostname to the part that decides ownership, so subdomains of
+ * the same site are not reported as deceptive.
+ *
+ * @param {string} host - The hostname to reduce.
+ * @returns {string} - The registrable domain.
+ */
+const registrable = (host) => {
+    const labels = host.split(".");
+    if (labels.length <= 2) {
+        return host;
+    }
+    const lastTwo = labels.slice(-2).join(".");
+    return labels.slice(UrlAnalyzer_1.MULTI_PART_SUFFIXES.indexOf(lastTwo) !== -1 ? -3 : -2).join(".");
+};
+const findSuspiciousLinks = (doc) => {
+    const findings = [];
+    doc.querySelectorAll("a[href]").forEach((node) => {
+        if (isIgnored(node) || !isVisible(node)) {
+            return;
+        }
+        const label = text(node.textContent);
+        if (!URL_LIKE_TEXT_PATTERN.test(label)) {
+            return;
+        }
+        const shown = label.replace(/^https?:\/\//i, "").replace(/^www\./i, "").split(/[/?#]/)[0].toLowerCase();
+        let actual = "";
+        try {
+            actual = new URL(node.href, doc.baseURI).hostname.replace(/^www\./i, "").toLowerCase();
+        }
+        catch (_a) {
+            return;
+        }
+        // Compare what the address actually resolves to. A link reading
+        // "example.com" that points at "login.example.com" is not deceptive.
+        if (shown && actual && registrable(shown) !== registrable(actual)) {
+            findings.push({ kind: "suspicious_link", element: node, vars: { shown, actual } });
+        }
+    });
+    return findings;
+};
+/**
+ * Walks up from an inline element to the closest block that is big enough
+ * to highlight on its own.
+ *
+ * @param {HTMLElement | null} element - The element the text lives in.
+ * @returns {HTMLElement | null} - The block worth spotlighting.
+ */
+const blockAncestor = (element) => {
+    let current = element;
+    let hops = 0;
+    while (current && hops < 4) {
+        const rect = current.getBoundingClientRect();
+        if (INLINE_TAGS.indexOf(current.tagName) === -1 && rect.height >= 14 && rect.width >= 60) {
+            return current;
+        }
+        current = current.parentElement;
+        hops++;
+    }
+    return element;
+};
+const extractQuote = (value, match) => {
+    const start = Math.max(value.lastIndexOf(".", match.index), value.lastIndexOf("!", match.index)) + 1;
+    const stop = value.slice(match.index).search(/[.!?]/);
+    const end = stop === -1 ? value.length : match.index + stop + 1;
+    const sentence = value.slice(start, end).trim() || value;
+    return sentence.length > 140 ? `${sentence.slice(0, 137).trim()}…` : sentence;
+};
+/**
+ * Looks for pressure tactics anywhere in the visible copy. Text nodes are
+ * scanned first so the exact sentence can be quoted back; if a phrase is
+ * split across nested elements, whole blocks are scanned as a fallback.
+ *
+ * @param {Document} doc - The document to scan.
+ * @returns {{element: HTMLElement, quote: string} | null} - The strongest match.
+ */
+const findUrgencyText = (doc) => {
+    let best = null;
+    // A document without a body would make createTreeWalker throw and, since
+    // this runs last, take every finding collected so far down with it.
+    if (!doc.body) {
+        return null;
+    }
+    const walker = doc.createTreeWalker(doc.body, SHOW_TEXT);
+    let node = walker.nextNode();
+    while (node) {
+        const value = text(node.nodeValue);
+        const parent = node.parentElement;
+        const match = value.length > 10 ? URGENCY_PATTERN.exec(value) : null;
+        if (match && parent && !isIgnored(parent)) {
+            const element = blockAncestor(parent);
+            if (element && isVisible(element) && (!best || value.length < best.length)) {
+                best = { element, quote: extractQuote(value, match), length: value.length };
+            }
+        }
+        node = walker.nextNode();
+    }
+    if (best) {
+        return { element: best.element, quote: best.quote };
+    }
+    doc.querySelectorAll("h1, h2, h3, h4, p, div, li, td, section, header").forEach(node => {
+        const element = node;
+        const value = text(element.textContent);
+        if (!value || value.length > 260 || isIgnored(element) || !isVisible(element)) {
+            return;
+        }
+        const match = URGENCY_PATTERN.exec(value);
+        if (match && (!best || value.length < best.length)) {
+            best = { element, quote: extractQuote(value, match), length: value.length };
+        }
+    });
+    return best ? { element: best.element, quote: best.quote } : null;
+};
+/**
+ * Scans the live DOM for every dangerous item and classifies the attack,
+ * combining the triggering event name with page-content heuristics.
+ *
+ * @param {string} triggerEventName - The name of the event that fired.
+ * @param {Document} [doc=document] - The document to scan.
+ * @returns {Detection} - The attack type, the findings and the permission kind (if any).
+ */
+const scanPage = (triggerEventName, doc = document, declaredBrand) => {
+    try {
+        const findings = [];
+        const inputs = collectInputs(doc);
+        const cardFields = inputs.filter(isCreditCardField);
+        if (cardFields.length) {
+            findings.push({ kind: "cc_form", element: groupContainer(cardFields) });
+        }
+        const passwordFields = inputs.filter(input => isPasswordField(input) && cardFields.indexOf(input) === -1);
+        if (passwordFields.length) {
+            findings.push({ kind: "password_form", element: groupContainer(passwordFields) });
+        }
+        const url = (0, UrlAnalyzer_1.analyzeUrl)();
+        const identity = (0, Identity_1.claimedIdentity)(doc, declaredBrand, element => !isIgnored(element) && isVisible(element));
+        if (identity && !(0, Identity_1.ownsDomain)(identity.name, url.domain)) {
+            findings.push({ kind: "brand_impersonation", element: identity.element, vars: { brand: identity.name, domain: url.domain } });
+        }
+        const downloads = findDownloadElements(doc);
+        if (downloads.length) {
+            findings.push({ kind: "download_link", element: downloads[0] });
+        }
+        findings.push(...findSuspiciousLinks(doc));
+        const urgency = findUrgencyText(doc);
+        if (urgency) {
+            findings.push({ kind: "urgency_text", element: urgency.element, vars: { quote: urgency.quote } });
+        }
+        const permissionKind = PERMISSION_EVENTS[triggerEventName] || null;
+        let type;
+        if (MALWARE_EVENTS.indexOf(triggerEventName) !== -1) {
+            type = "malware";
+        }
+        else if (permissionKind) {
+            type = "fake_page";
+        }
+        else if (cardFields.length) {
+            type = "fraud";
+        }
+        else if (passwordFields.length) {
+            type = "login";
+        }
+        else if (downloads.length) {
+            type = "malware";
+        }
+        else {
+            type = "fake_page";
+        }
+        return { type, findings, permissionKind };
+    }
+    catch (_a) {
+        return { type: "fake_page", findings: [], permissionKind: PERMISSION_EVENTS[triggerEventName] || null };
+    }
+};
+exports.scanPage = scanPage;
+
+
+/***/ }),
+
+/***/ "./src/tutorial/Identity.ts":
+/*!**********************************!*\
+  !*** ./src/tutorial/Identity.ts ***!
+  \**********************************/
+/***/ ((__unused_webpack_module, exports, __webpack_require__) => {
+
+"use strict";
+
+Object.defineProperty(exports, "__esModule", ({ value: true }));
+exports.ownsDomain = exports.nameAppearsIn = exports.claimedIdentity = exports.assetName = void 0;
+const brands_1 = __webpack_require__(/*! ./brands */ "./src/tutorial/brands.ts");
+// How much each place a name appears is worth. A name needs SCORE_THRESHOLD
+// points before we are willing to tell the user "this page pretends to be X",
+// so a single weak hint is never enough on its own.
+const WEIGHTS = {
+    declared: 100,
+    siteName: 4,
+    copyright: 4,
+    appName: 3,
+    // A logo's alt text or file name is a stronger claim of identity than a
+    // heading, so logo + heading is enough while title + heading is not.
+    logo: 3,
+    title: 2,
+    heading: 1,
+};
+const SCORE_THRESHOLD = 4;
+// Caps so a huge cloned DOM can never stall the redirect path.
+const MAX_TEXT_NODES = 4000;
+const MAX_ELEMENTS = 600;
+// Words that describe what a page does rather than who owns it. Covers the
+// ten locales the tutorial ships with, without diacritics (text is normalised
+// before comparison).
+const GENERIC = [
+    "login", "log in", "signin", "sign in", "sign on", "sign up", "logon", "account", "my account",
+    "home", "homepage", "welcome", "secure", "security", "verify", "verification", "confirm",
+    "portal", "index", "untitled", "document", "page", "dashboard", "error", "support", "help",
+    "customer service", "online banking", "internet banking", "e banking", "webmail", "email", "mail",
+    "password", "congratulations", "notification", "notifications", "update", "payment", "invoice",
+    "order", "delivery", "shipment", "tracking", "download", "file", "share", "shared", "inbox",
+    "logo", "brand", "image", "img", "picture", "photo", "banner", "header", "footer", "icon", "avatar",
+    "autentificare", "conectare", "cont", "contul meu", "bine ati venit", "parola", "felicitari",
+    "livrare", "comanda", "factura", "plata", "notificare",
+    "iniciar sesion", "inicio de sesion", "acceso", "cuenta", "mi cuenta", "bienvenido", "bienvenida",
+    "contrasena", "felicidades", "entrega", "pedido", "factura", "pago", "aviso",
+    "inici de sessio", "compte", "benvingut", "contrasenya",
+    "iniciar sessao", "entrar", "conta", "minha conta", "bem vindo", "palavra passe", "senha",
+    "parabens", "entrega", "encomenda", "fatura", "pagamento", "aviso",
+    "connexion", "se connecter", "identification", "espace client", "bienvenue", "mot de passe",
+    "felicitations", "livraison", "commande", "facture", "paiement", "avis",
+    "anmelden", "anmeldung", "einloggen", "konto", "mein konto", "willkommen", "kennwort", "passwort",
+    "gluckwunsch", "lieferung", "bestellung", "rechnung", "zahlung", "hinweis",
+    "συνδεση", "εισοδος", "λογαριασμος", "καλως ηρθατε", "κωδικος", "συγχαρητηρια", "παραδοση",
+    "παραγγελια", "τιμολογιο", "πληρωμη", "ειδοποιηση",
+];
+// Legal suffixes and copyright boilerplate to strip before comparing names.
+const LEGAL_SUFFIX = /[\s,]+(s\s*\.?\s*a\s*\.?\s*(r\s*\.?\s*l\s*\.?)?|s\s*\.?\s*r\s*\.?\s*l\s*\.?|s\s*\.?\s*p\s*\.?\s*a\s*\.?|n\s*\.?\s*v\s*\.?|b\s*\.?\s*v\s*\.?|inc|incorporated|ltd|limited|llc|plc|gmbh|mbh|ag|kg|oy|ab|group|holdings?)\s*\.?\s*$/i;
+const COPYRIGHT_NOISE = /(all rights reserved|toate drepturile rezervate|todos los derechos reservados|tots els drets reservats|todos os direitos reservados|tous droits reserves|alle rechte vorbehalten|με επιφυλαξη παντος δικαιωματος)/i;
+// NodeFilter.SHOW_TEXT, spelled out so the module works without the global.
+const SHOW_TEXT = 4;
+const text = (value) => (value || "").replace(/\s+/g, " ").trim();
+// Individual words drawn from the generic phrases above, plus the filler that
+// glues them together, so "sign in to your account" is recognised as generic
+// while "Microsoft" or "Banca Transilvania" is not.
+const GENERIC_WORDS = {};
+GENERIC.join(" ").split(" ").concat(["to", "your", "the", "my", "our", "a", "an", "of", "for", "and", "or",
+    "la", "el", "los", "las", "su", "tu", "de", "del", "al", "en", "y",
+    "o", "os", "as", "sua", "seu", "do", "da", "dos", "das", "e",
+    "le", "les", "votre", "vos", "du", "des", "et",
+    "ihr", "ihre", "der", "die", "das", "den", "und", "zum", "zur",
+    "στο", "στη", "σας", "σου", "και", "το", "τη", "της", "του",
+    "cont", "contul", "tau", "dvs", "si"]).forEach(word => {
+    if (word) {
+        GENERIC_WORDS[word] = true;
+    }
+});
+const isGeneric = (value) => {
+    const normalized = (0, brands_1.normalize)(value).trim();
+    if (!normalized) {
+        return true;
+    }
+    if (GENERIC.indexOf(normalized) !== -1) {
+        return true;
+    }
+    // Generic only when every single word is page furniture — one real word
+    // is enough to make it a possible name.
+    return normalized.split(" ").every(word => GENERIC_WORDS[word] === true);
+};
+/**
+ * Decides whether a string could be an organisation's name rather than a
+ * description of the page.
+ *
+ * @param {string} value - The candidate string.
+ * @returns {boolean} - True when the string looks like a name.
+ */
+const isPlausibleName = (value) => {
+    const words = value.split(" ");
+    return value.length >= 2 && value.length <= 40 && words.length <= 5 && /[a-zΑ-Ωα-ω]/i.test(value) && !isGeneric(value);
+};
+/**
+ * Splits a headline or title into the parts that could carry a name.
+ *
+ * @param {string} value - The raw text.
+ * @returns {string[]} - Candidate names.
+ */
+const segments = (value) => {
+    return value.split(/[|–—·•>»/]|\s+[-‒]\s+/).map(text).filter(isPlausibleName);
+};
+/**
+ * Extracts the owner's name out of a copyright line, e.g.
+ * "© 2026 Banca Transilvania S.A. Toate drepturile rezervate" -> "Banca Transilvania".
+ *
+ * @param {string} value - The copyright line.
+ * @returns {string} - The owner's name, or an empty string.
+ */
+const copyrightOwner = (value) => {
+    let owner = text(value
+        .replace(COPYRIGHT_NOISE, "")
+        .replace(/©|\(c\)|&copy;|copyright/gi, "")
+        .replace(/\b(19|20)\d{2}(\s*[-–]\s*(19|20)?\d{2,4})?\b/g, ""));
+    // Strip legal suffixes repeatedly: "Acme Holding S.A." loses both parts.
+    let previous = "";
+    while (owner && owner !== previous) {
+        previous = owner;
+        owner = text(owner.replace(LEGAL_SUFFIX, ""));
+    }
+    const name = text(owner.replace(/[.,;|]+$/, ""));
+    return isPlausibleName(name) ? name : "";
+};
+/**
+ * Turns an asset reference into searchable words, so a logo served as
+ * "/assets/banca-transilvania-logo@2x.svg" still reveals the name. Inline SVG
+ * data URIs are decoded, since their markup often contains the wordmark.
+ *
+ * @param {string | null} [value] - A src, data-src or href attribute.
+ * @returns {string} - Words extracted from the reference.
+ */
+const assetName = (value) => {
+    if (!value) {
+        return "";
+    }
+    if (value.indexOf("data:") === 0) {
+        if (value.indexOf("image/svg+xml") === -1 || value.indexOf(";base64") !== -1) {
+            return "";
+        }
+        try {
+            return text(decodeURIComponent(value.slice(value.indexOf(",") + 1)).replace(/<[^>]*>/g, " "));
+        }
+        catch (_a) {
+            return "";
+        }
+    }
+    const file = value.split(/[?#]/)[0].split("/").pop() || "";
+    return text(file.replace(/\.[a-z0-9]+$/i, "").replace(/[-_.@+%]+/g, " ").replace(/\b(logo|icon|favicon|header|brand|light|dark|white|black|small|large|\d+x|\d+)\b/gi, " "));
+};
+exports.assetName = assetName;
+/**
+ * Works out which organisation a page presents itself as, without relying on
+ * a list of known brands. Every place a name can appear contributes points;
+ * a name is only reported once it clears the threshold, which keeps page
+ * furniture like "Sign in" or "Congratulations!" from being mistaken for one.
+ *
+ * A brand declared by the campaign always wins — the platform that built the
+ * landing page knows what it imitates far better than any heuristic.
+ *
+ * @param {Document} doc - The document to inspect.
+ * @param {string} [declared] - Brand supplied by config or the campaign token.
+ * @param {(element: HTMLElement) => boolean} isUsable - Filters out hidden or overlay elements.
+ * @returns {Identity | null} - The claimed identity, if one is convincing enough.
+ */
+const claimedIdentity = (doc, declared, isUsable) => {
+    const scores = {};
+    const add = (raw, weight, element) => {
+        const value = text(raw);
+        if (!value || !isPlausibleName(value)) {
+            return;
+        }
+        // "Acme logo" in an alt attribute and "Acme" in a heading are the same
+        // claim, so strip the descriptive noise before scoring.
+        const cleaned = text(value.replace(/\b(logo|logotype|wordmark|brand|icon|image|banner|header|home|homepage)\b/gi, "")) || value;
+        const name = (0, brands_1.canonicalBrand)(cleaned) || cleaned;
+        const key = (0, brands_1.normalize)(name).trim();
+        if (!key) {
+            return;
+        }
+        const entry = scores[key] || (scores[key] = { name, score: 0, element: null, seen: [] });
+        // One element counts once, however many attributes repeat the name.
+        // Otherwise a single <svg aria-label="Facebook"><text>Facebook</text></svg>
+        // would score twice and invent a brand on an unrelated page.
+        if (element) {
+            if (entry.seen.indexOf(element) !== -1) {
+                return;
+            }
+            entry.seen.push(element);
+        }
+        entry.score += weight;
+        entry.element = entry.element || element;
+    };
+    // A declared brand is authoritative and bypasses the plausibility filter,
+    // which would otherwise reject a short name like "X" or "BT".
+    if (text(declared)) {
+        const name = (0, brands_1.canonicalBrand)(text(declared)) || text(declared);
+        scores[(0, brands_1.normalize)(name).trim()] = { name, score: WEIGHTS.declared, element: null, seen: [] };
+    }
+    const meta = (selector) => { var _a; return text((_a = doc.querySelector(selector)) === null || _a === void 0 ? void 0 : _a.getAttribute("content")); };
+    add(meta("meta[property='og:site_name']"), WEIGHTS.siteName, null);
+    add(meta("meta[name='application-name']"), WEIGHTS.appName, null);
+    add(meta("meta[name='apple-mobile-web-app-title']"), WEIGHTS.appName, null);
+    add(meta("meta[name='author']"), WEIGHTS.appName, null);
+    segments(text(doc.title)).forEach(part => add(part, WEIGHTS.title, null));
+    segments(meta("meta[property='og:title']")).forEach(part => add(part, WEIGHTS.title, null));
+    Array.prototype.slice.call(doc.querySelectorAll("img, svg, [class*='logo'], [id*='logo'], [class*='brand']"), 0, MAX_ELEMENTS).forEach((node) => {
+        const element = node;
+        if (!isUsable(element)) {
+            return;
+        }
+        [
+            element.getAttribute("alt"),
+            element.getAttribute("aria-label"),
+            element.getAttribute("title"),
+            (0, exports.assetName)(element.getAttribute("src")),
+            (0, exports.assetName)(element.getAttribute("data-src")),
+            element.tagName.toUpperCase() === "SVG" ? text(element.textContent) : "",
+        ].forEach(value => add(text(value), WEIGHTS.logo, element));
+    });
+    Array.prototype.slice.call(doc.querySelectorAll("h1, h2, header"), 0, MAX_ELEMENTS).forEach((node) => {
+        const element = node;
+        if (isUsable(element)) {
+            segments(text(element.textContent)).forEach(part => add(part, WEIGHTS.heading, element));
+        }
+    });
+    // A copyright line names the owner outright and is rarely edited by the
+    // people cloning a page, which makes it one of the strongest signals.
+    // Walking text nodes keeps this linear: querying every div/span and then
+    // reading each one's recursive textContent is quadratic on deep clones.
+    if (doc.body) {
+        const walker = doc.createTreeWalker(doc.body, SHOW_TEXT);
+        let node = walker.nextNode();
+        let scanned = 0;
+        while (node && scanned < MAX_TEXT_NODES) {
+            scanned++;
+            const value = text(node.nodeValue);
+            if (value.length <= 160 && /©|\(c\)|copyright/i.test(value)) {
+                const element = node.parentElement;
+                if (element && isUsable(element)) {
+                    add(copyrightOwner(value), WEIGHTS.copyright, element);
+                }
+            }
+            node = walker.nextNode();
+        }
+    }
+    let best = null;
+    Object.keys(scores).forEach(key => {
+        const entry = scores[key];
+        if (entry.score >= SCORE_THRESHOLD && (!best || entry.score > best.confidence)) {
+            best = { name: entry.name, element: entry.element, confidence: entry.score };
+        }
+    });
+    return best;
+};
+exports.claimedIdentity = claimedIdentity;
+/**
+ * Checks whether a name appears in a host as a label of its own, rather than
+ * as an accidental substring. Matching on substrings alone would let a short
+ * brand like "ING" light up inside the perfectly ordinary subdomain "login".
+ *
+ * @param {string} name - The organisation name.
+ * @param {string} host - A hostname or subdomain chain.
+ * @returns {boolean} - True when the host really carries the name.
+ */
+const nameAppearsIn = (name, host) => {
+    // normalize() turns dots and hyphens into spaces, so labels fall out of it.
+    // "Banca Transilvania" therefore has to match the label "bancatransilvania",
+    // the pair "banca"+"transilvania", or a label that embeds the whole name.
+    const labels = (0, brands_1.normalize)(host).trim().split(" ").filter(Boolean);
+    if (!labels.length) {
+        return false;
+    }
+    const { full, abbreviations } = (0, brands_1.brandForms)(name);
+    // Abbreviations must be a label of their own: "bt.example.com" counts,
+    // the "bt" inside "abtract" does not.
+    if (abbreviations.some(alias => labels.indexOf(alias) !== -1)) {
+        return true;
+    }
+    return full.some(target => {
+        if (target.length < 4) {
+            return labels.indexOf(target) !== -1;
+        }
+        if (labels.indexOf(target) !== -1) {
+            return true;
+        }
+        // Consecutive labels only. Joining every label of the host would let
+        // "abanca.transilvaniatours.xyz" masquerade as "Banca Transilvania".
+        for (let start = 0; start < labels.length; start++) {
+            let joined = "";
+            for (let end = start; end < labels.length && joined.length < target.length; end++) {
+                joined += labels[end];
+                if (joined === target) {
+                    return true;
+                }
+            }
+        }
+        // Embedded in one label, e.g. "securebancatransilvania.xyz". Long names
+        // only, so short ones can't collide with ordinary words.
+        return target.length >= 8 && labels.some(label => label.indexOf(target) !== -1);
+    });
+};
+exports.nameAppearsIn = nameAppearsIn;
+/**
+ * Checks whether the name is actually part of the domain, in which case the
+ * page is not pretending to be anyone else.
+ *
+ * @param {string} name - The organisation name.
+ * @param {string} domain - The registrable domain.
+ * @returns {boolean} - True when the domain already carries the name.
+ */
+const ownsDomain = (name, domain) => {
+    // Substring containment would be catastrophic here: it would treat
+    // "microsoft-login.xyz" as belonging to Microsoft and suppress the very
+    // warning the user needs. The name has to BE the domain's own label —
+    // "training.com" is not ING, "pineapple.com" is not Apple.
+    //
+    // Split on dots only. Hyphens stay inside the label, so "banca-transilvania"
+    // still resolves to the brand while "microsoft-login" does not.
+    const labels = domain.split(".").map(label => (0, brands_1.normalize)(label).replace(/ /g, "")).filter(Boolean);
+    if (!labels.length) {
+        return true;
+    }
+    // Drop the public suffix; "bancatransilvania.ro" is owned by its first label.
+    const owner = labels.slice(0, Math.max(labels.length - 1, 1));
+    const { full, abbreviations } = (0, brands_1.brandForms)(name);
+    if (abbreviations.some(alias => owner.indexOf(alias) !== -1)) {
+        return true;
+    }
+    return full.some(target => {
+        if (!target) {
+            return false;
+        }
+        if (owner.indexOf(target) !== -1) {
+            return true;
+        }
+        // A name split across consecutive labels, e.g. "banca.transilvania.ro".
+        for (let start = 0; start < owner.length; start++) {
+            let joined = "";
+            for (let end = start; end < owner.length && joined.length < target.length; end++) {
+                joined += owner[end];
+                if (joined === target) {
+                    return true;
+                }
+            }
+        }
+        return false;
+    });
+};
+exports.ownsDomain = ownsDomain;
+
+
+/***/ }),
+
+/***/ "./src/tutorial/Placement.ts":
+/*!***********************************!*\
+  !*** ./src/tutorial/Placement.ts ***!
+  \***********************************/
+/***/ ((__unused_webpack_module, exports) => {
+
+"use strict";
+
+Object.defineProperty(exports, "__esModule", ({ value: true }));
+exports.placeCard = exports.revealTarget = void 0;
+const GAP = 18;
+const MARGIN = 16;
+const MIN_WIDTH = 296;
+const SIDE_WIDTH = 400;
+const STACK_WIDTH = 460;
+const SHEET_BREAKPOINT = 560;
+const clamp = (value, min, max) => Math.min(Math.max(value, min), max);
+/**
+ * Measures how tall the card wants to be at a given width.
+ *
+ * @param {HTMLElement} card - The card element.
+ * @param {number} width - The width to measure at.
+ * @returns {number} - The natural height in pixels.
+ */
+const naturalHeight = (card, width) => {
+    card.style.width = `${width}px`;
+    card.style.maxHeight = "none";
+    return card.offsetHeight;
+};
+/**
+ * Brings the target into view with the smallest scroll that works. Unlike
+ * scrollIntoView it never re-centres an element that is already visible,
+ * so the page doesn't lurch between steps.
+ *
+ * @param {DOMRect} rect - The target's viewport rect.
+ * @param {number} reserved - Space at the bottom the card will occupy (sheet mode).
+ */
+const revealTarget = (rect, reserved = 0) => {
+    const top = MARGIN;
+    const bottom = window.innerHeight - MARGIN - reserved;
+    let delta = 0;
+    if (rect.height > bottom - top) {
+        delta = rect.top - top;
+    }
+    else if (rect.top < top) {
+        delta = rect.top - top;
+    }
+    else if (rect.bottom > bottom) {
+        delta = rect.bottom - bottom;
+    }
+    if (Math.abs(delta) > 1) {
+        window.scrollBy({ top: delta, behavior: "auto" });
+    }
+};
+exports.revealTarget = revealTarget;
+/**
+ * Places the card in the roomiest spot next to the highlighted element,
+ * sizing it to the space that is actually available: beside the target when
+ * there is width for it, above or below when there isn't, and centred when
+ * no element is highlighted.
+ *
+ * @param {HTMLElement} card - The card to position.
+ * @param {DOMRect | null} rect - The highlighted element's rect, if any.
+ * @returns {Placement} - The placement that was applied.
+ */
+const placeCard = (card, rect) => {
+    const vw = window.innerWidth;
+    const vh = window.innerHeight;
+    const room = vh - MARGIN * 2;
+    if (vw < SHEET_BREAKPOINT) {
+        const width = vw;
+        const height = Math.min(naturalHeight(card, width), vh * 0.72);
+        card.style.width = `${width}px`;
+        card.style.maxHeight = `${Math.round(vh * 0.72)}px`;
+        card.style.left = "0px";
+        card.style.top = `${vh - height}px`;
+        return "sheet";
+    }
+    if (!rect) {
+        const width = Math.min(STACK_WIDTH, vw - MARGIN * 2);
+        const height = Math.min(naturalHeight(card, width), room);
+        card.style.maxHeight = `${room}px`;
+        card.style.left = `${Math.round((vw - width) / 2)}px`;
+        card.style.top = `${Math.round((vh - height) / 2)}px`;
+        return "center";
+    }
+    const space = {
+        right: vw - rect.right - GAP - MARGIN,
+        left: rect.left - GAP - MARGIN,
+        bottom: vh - rect.bottom - GAP - MARGIN,
+        top: rect.top - GAP - MARGIN,
+    };
+    // Prefer the side of the target that has the most room, then fall back to
+    // stacking above or below it.
+    const horizontal = space.right >= space.left ? ["right", "left"] : ["left", "right"];
+    const vertical = space.bottom >= space.top ? ["bottom", "top"] : ["top", "bottom"];
+    const order = [...horizontal, ...vertical];
+    for (const placement of order) {
+        const isSide = placement === "right" || placement === "left";
+        const available = space[placement];
+        if (isSide) {
+            if (available < MIN_WIDTH) {
+                continue;
+            }
+            const width = clamp(available, MIN_WIDTH, SIDE_WIDTH);
+            const height = naturalHeight(card, width);
+            if (height > room) {
+                continue;
+            }
+            card.style.maxHeight = `${room}px`;
+            card.style.left = `${Math.round(placement === "right" ? rect.right + GAP : rect.left - GAP - width)}px`;
+            card.style.top = `${Math.round(clamp(rect.top + rect.height / 2 - height / 2, MARGIN, vh - height - MARGIN))}px`;
+            return placement;
+        }
+        const width = clamp(vw - MARGIN * 2, MIN_WIDTH, STACK_WIDTH);
+        const height = naturalHeight(card, width);
+        if (height > available) {
+            continue;
+        }
+        card.style.maxHeight = `${available}px`;
+        card.style.left = `${Math.round(clamp(rect.left + rect.width / 2 - width / 2, MARGIN, vw - width - MARGIN))}px`;
+        card.style.top = `${Math.round(placement === "bottom" ? rect.bottom + GAP : rect.top - GAP - height)}px`;
+        return placement;
+    }
+    // Nothing fits outright: use the largest gap and let the card scroll. Every
+    // value below is clamped to the viewport — an unclamped fallback could put
+    // the card at a negative offset or straight over the element it explains.
+    const best = order.reduce((winner, placement) => (space[placement] > space[winner] ? placement : winner), order[0]);
+    const isSide = best === "right" || best === "left";
+    const width = clamp(isSide ? space[best] : vw - MARGIN * 2, Math.min(MIN_WIDTH, vw - MARGIN * 2), isSide ? SIDE_WIDTH : STACK_WIDTH);
+    const limit = clamp(isSide ? room : space[best], Math.min(160, room), room);
+    const height = Math.min(naturalHeight(card, width), limit);
+    card.style.width = `${width}px`;
+    card.style.maxHeight = `${limit}px`;
+    const left = isSide
+        ? (best === "right" ? rect.right + GAP : rect.left - GAP - width)
+        : rect.left + rect.width / 2 - width / 2;
+    const top = isSide
+        ? rect.top + rect.height / 2 - height / 2
+        : (best === "bottom" ? rect.bottom + GAP : rect.top - GAP - height);
+    card.style.left = `${Math.round(clamp(left, MARGIN, Math.max(vw - width - MARGIN, MARGIN)))}px`;
+    card.style.top = `${Math.round(clamp(top, MARGIN, Math.max(vh - height - MARGIN, MARGIN)))}px`;
+    return best;
+};
+exports.placeCard = placeCard;
+
+
+/***/ }),
+
+/***/ "./src/tutorial/Spotlight.ts":
+/*!***********************************!*\
+  !*** ./src/tutorial/Spotlight.ts ***!
+  \***********************************/
+/***/ ((__unused_webpack_module, exports) => {
+
+"use strict";
+
+Object.defineProperty(exports, "__esModule", ({ value: true }));
+exports.Spotlight = void 0;
+const SPOTLIGHT_PADDING = 8;
+/**
+ * Dims and blurs the whole page except for a rectangular cutout around the
+ * highlighted element. The cutout is built from four panels rather than a
+ * single box-shadow so the dimmed area keeps its backdrop blur.
+ */
+class Spotlight {
+    constructor(node) {
+        this.node = node;
+        this.element = null;
+        this.frame = 0;
+        this.running = false;
+        this.onRectChange = null;
+        this.lastRect = null;
+        // Tracked so a viewport change re-places the card even when the target,
+        // being position:fixed, keeps exactly the same rect.
+        this.viewport = "";
+    }
+    /**
+     * Highlights the given page element, scrolling it into view and keeping
+     * the cutout in sync with scrolling, resizing and layout changes.
+     *
+     * @param {HTMLElement} element - The page element to highlight.
+     */
+    show(element, onRectChange) {
+        this.element = element;
+        this.onRectChange = onRectChange;
+        this.node.style.display = "block";
+        this.update();
+        this.start();
+    }
+    hide() {
+        this.element = null;
+        this.onRectChange = null;
+        this.lastRect = null;
+        this.viewport = "";
+        this.node.style.display = "none";
+        this.stop();
+    }
+    destroy() {
+        this.hide();
+    }
+    start() {
+        if (this.running) {
+            return;
+        }
+        this.running = true;
+        const tick = () => {
+            if (!this.running) {
+                return;
+            }
+            this.update();
+            this.frame = window.requestAnimationFrame(tick);
+        };
+        this.frame = window.requestAnimationFrame(tick);
+    }
+    stop() {
+        this.running = false;
+        if (this.frame) {
+            window.cancelAnimationFrame(this.frame);
+            this.frame = 0;
+        }
+    }
+    part(name) {
+        return this.node.querySelector(`.${name}`);
+    }
+    update() {
+        // Also stop if the overlay itself was removed by the host page,
+        // otherwise this loop runs for the lifetime of the tab.
+        if (!this.element || !this.element.isConnected || !this.node.isConnected) {
+            this.hide();
+            return;
+        }
+        const rect = this.element.getBoundingClientRect();
+        const moved = !this.lastRect
+            || Math.abs(rect.top - this.lastRect.top) > 0.5
+            || Math.abs(rect.left - this.lastRect.left) > 0.5
+            || Math.abs(rect.width - this.lastRect.width) > 0.5
+            || Math.abs(rect.height - this.lastRect.height) > 0.5;
+        // Nothing moved: skip the five shadow queries and style writes that
+        // would otherwise run on every single frame.
+        if (!moved && this.viewport === `${window.innerWidth}x${window.innerHeight}`) {
+            return;
+        }
+        this.lastRect = rect;
+        this.viewport = `${window.innerWidth}x${window.innerHeight}`;
+        if (this.onRectChange) {
+            this.onRectChange(rect);
+        }
+        const top = Math.max(rect.top - SPOTLIGHT_PADDING, 0);
+        const left = Math.max(rect.left - SPOTLIGHT_PADDING, 0);
+        const right = Math.min(rect.right + SPOTLIGHT_PADDING, window.innerWidth);
+        const bottom = Math.min(rect.bottom + SPOTLIGHT_PADDING, window.innerHeight);
+        const above = this.part("cut-top");
+        above.style.top = "0";
+        above.style.left = "0";
+        above.style.width = "100%";
+        above.style.height = `${top}px`;
+        const below = this.part("cut-bottom");
+        below.style.top = `${bottom}px`;
+        below.style.left = "0";
+        below.style.width = "100%";
+        below.style.height = `${Math.max(window.innerHeight - bottom, 0)}px`;
+        const before = this.part("cut-left");
+        before.style.top = `${top}px`;
+        before.style.left = "0";
+        before.style.width = `${left}px`;
+        before.style.height = `${Math.max(bottom - top, 0)}px`;
+        const after = this.part("cut-right");
+        after.style.top = `${top}px`;
+        after.style.left = `${right}px`;
+        after.style.width = `${Math.max(window.innerWidth - right, 0)}px`;
+        after.style.height = `${Math.max(bottom - top, 0)}px`;
+        const ring = this.part("ring");
+        ring.style.top = `${top}px`;
+        ring.style.left = `${left}px`;
+        ring.style.width = `${Math.max(right - left, 0)}px`;
+        ring.style.height = `${Math.max(bottom - top, 0)}px`;
+    }
+}
+exports.Spotlight = Spotlight;
+
+
+/***/ }),
+
+/***/ "./src/tutorial/Tutorial.ts":
+/*!**********************************!*\
+  !*** ./src/tutorial/Tutorial.ts ***!
+  \**********************************/
+/***/ ((__unused_webpack_module, exports, __webpack_require__) => {
+
+"use strict";
+
+Object.defineProperty(exports, "__esModule", ({ value: true }));
+exports.Tutorial = void 0;
+const overlay_styles_1 = __webpack_require__(/*! ./overlay.styles */ "./src/tutorial/overlay.styles.ts");
+const Placement_1 = __webpack_require__(/*! ./Placement */ "./src/tutorial/Placement.ts");
+const Spotlight_1 = __webpack_require__(/*! ./Spotlight */ "./src/tutorial/Spotlight.ts");
+const TutorialContent_1 = __webpack_require__(/*! ./TutorialContent */ "./src/tutorial/TutorialContent.ts");
+const ICON_STROKE = "fill=\"none\" stroke=\"#1c0810\" stroke-width=\"1.8\" stroke-linecap=\"round\" stroke-linejoin=\"round\"";
+const ICONS = {
+    url: `<svg viewBox="0 0 24 24" ${ICON_STROKE}><rect x="2" y="5" width="20" height="14" rx="3"/><circle cx="7" cy="9" r="0.5"/><circle cx="10" cy="9" r="0.5"/><path d="M5 13h11M5 16h7"/></svg>`,
+    lock: `<svg viewBox="0 0 24 24" ${ICON_STROKE}><rect x="5" y="10" width="14" height="10" rx="2"/><path d="M8 10V7a4 4 0 0 1 8 0v3"/><circle cx="12" cy="15" r="1.5"/></svg>`,
+    form: `<svg viewBox="0 0 24 24" ${ICON_STROKE}><circle cx="8" cy="12" r="4"/><path d="M12 12h9M18 12v3M21 12v2"/></svg>`,
+    card: `<svg viewBox="0 0 24 24" ${ICON_STROKE}><rect x="2" y="5" width="20" height="14" rx="3"/><path d="M2 10h20M6 15h4"/></svg>`,
+    clock: `<svg viewBox="0 0 24 24" ${ICON_STROKE}><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 3"/></svg>`,
+    download: `<svg viewBox="0 0 24 24" ${ICON_STROKE}><path d="M12 3v11M7 10l5 5 5-5M4 19h16"/></svg>`,
+    link: `<svg viewBox="0 0 24 24" ${ICON_STROKE}><path d="M10 14a5 5 0 0 0 7 0l3-3a5 5 0 0 0-7-7l-1.5 1.5"/><path d="M14 10a5 5 0 0 0-7 0l-3 3a5 5 0 0 0 7 7l1.5-1.5"/></svg>`,
+    shield: `<svg viewBox="0 0 24 24" ${ICON_STROKE}><path d="M12 3l8 3v6c0 4.5-3.5 8-8 9-4.5-1-8-4.5-8-9V6z"/><path d="M9 12l2 2 4-4"/></svg>`,
+    permission: `<svg viewBox="0 0 24 24" ${ICON_STROKE}><path d="M18 9a6 6 0 1 0-12 0c0 5-2 6-2 6h16s-2-1-2-6"/><path d="M10 19a2 2 0 0 0 4 0"/></svg>`,
+    mic: `<svg viewBox="0 0 24 24" ${ICON_STROKE}><rect x="9" y="3" width="6" height="11" rx="3"/><path d="M5 11a7 7 0 0 0 14 0M12 18v3M9 21h6"/></svg>`,
+    webcam: `<svg viewBox="0 0 24 24" ${ICON_STROKE}><path d="M15 10l6-3v10l-6-3z"/><rect x="3" y="6" width="12" height="12" rx="3"/></svg>`,
+    location: `<svg viewBox="0 0 24 24" ${ICON_STROKE}><path d="M12 21s7-5.5 7-11a7 7 0 1 0-14 0c0 5.5 7 11 7 11z"/><circle cx="12" cy="10" r="2.5"/></svg>`,
+    clipboard: `<svg viewBox="0 0 24 24" ${ICON_STROKE}><rect x="5" y="4" width="14" height="17" rx="2"/><rect x="9" y="2" width="6" height="4" rx="1"/><path d="M9 11h6M9 15h4"/></svg>`,
+    extension: `<svg viewBox="0 0 24 24" ${ICON_STROKE}><path d="M10 4a2 2 0 1 1 4 0v2h3a1 1 0 0 1 1 1v3h2a2 2 0 1 1 0 4h-2v4a1 1 0 0 1-1 1h-4v-2a2 2 0 1 0-4 0v2H6a1 1 0 0 1-1-1V7a1 1 0 0 1 1-1h4z"/></svg>`,
+    done: `<svg viewBox="0 0 24 24" ${ICON_STROKE}><circle cx="12" cy="12" r="9"/><path d="M8 12.5l2.5 2.5L16 9.5"/></svg>`,
+};
+const ARROW_ICON = "<svg viewBox=\"0 0 12 12\" fill=\"none\" stroke=\"#1c0810\" stroke-width=\"2\" stroke-linecap=\"round\" stroke-linejoin=\"round\"><path d=\"M6 10.5V2.2\"/><path d=\"M2.2 6L6 2.2 9.8 6\"/></svg>";
+class Tutorial {
+    constructor(t, skippable, onComplete, logger) {
+        this.t = t;
+        this.skippable = skippable;
+        this.onComplete = onComplete;
+        this.logger = logger;
+        this.host = null;
+        this.onResize = null;
+        this.root = null;
+        this.spotlight = null;
+        this.steps = [];
+        this.currentStep = 0;
+        this.placed = false;
+        this.finished = false;
+    }
+    get isOpen() {
+        return this.host !== null;
+    }
+    /**
+     * Whether the overlay is genuinely on screen. The pages this runs on are
+     * attacker-authored, so being mounted is not the same as being visible:
+     * a CSS rule can hide the host, a MutationObserver can detach it, and a
+     * strict CSP can drop the injected styles.
+     *
+     * @returns {boolean} - True when the card is rendered and sized.
+     */
+    get isUsable() {
+        if (!this.host || !this.host.isConnected || !this.root) {
+            return false;
+        }
+        const card = this.root.querySelector(".card");
+        if (!card) {
+            return false;
+        }
+        const rect = card.getBoundingClientRect();
+        if (rect.width < 80 || rect.height < 60) {
+            return false;
+        }
+        const style = window.getComputedStyle(this.host);
+        return style.display !== "none" && style.visibility !== "hidden" && style.opacity !== "0";
+    }
+    /**
+     * Opens the tutorial overlay for the given detection, walking the user
+     * through every dangerous item found on the page. Calls onComplete
+     * (which performs the redirect) when the user finishes or skips.
+     *
+     * @param {Detection} detection - The result of scanning the page.
+     */
+    open(detection) {
+        if (this.isOpen) {
+            return;
+        }
+        // If the tutorial already ran — for instance the user cancelled the
+        // navigation in a beforeunload prompt — don't rebuild it, just leave.
+        if (this.finished) {
+            this.onComplete();
+            return;
+        }
+        this.steps = (0, TutorialContent_1.stepsFor)(detection);
+        this.currentStep = 0;
+        this.mount();
+        this.renderStep();
+        this.logger.info(`Tutorial opened (${detection.type}, ${this.steps.length} steps).`);
+    }
+    mount() {
+        this.host = document.createElement("div");
+        this.host.setAttribute("data-ignore", "true");
+        this.root = this.host.attachShadow({ mode: "closed" });
+        const style = document.createElement("style");
+        style.textContent = overlay_styles_1.OVERLAY_CSS;
+        this.root.appendChild(style);
+        const overlay = document.createElement("div");
+        overlay.className = "overlay";
+        overlay.innerHTML = `
+			<div class="backdrop"></div>
+			<div class="spotlight" style="display: none;">
+				<div class="cut-top"></div>
+				<div class="cut-bottom"></div>
+				<div class="cut-left"></div>
+				<div class="cut-right"></div>
+				<div class="ring"><i></i><i></i><i></i><i></i></div>
+			</div>
+			<div class="arrow" style="display: none;">
+				<div class="arrow-hint">
+					<span class="arrow-mark">${ARROW_ICON}</span>
+					<span class="arrow-text"></span>
+				</div>
+			</div>
+			<div class="card">
+				<div class="rail"><span class="rail-fill"></span></div>
+				<div class="head">
+					<span class="icon"></span>
+					<span class="label"></span>
+					<span class="count"></span>
+				</div>
+				<h2 class="title"></h2>
+				<p class="body"></p>
+				<div class="url-box" style="display: none;">
+					<span class="url-label"></span>
+					<span class="url-value"></span>
+				</div>
+				<p class="reason" style="display: none;"></p>
+				<div class="actions">
+					<button type="button" class="btn btn-ghost back"></button>
+					<button type="button" class="btn btn-primary next"></button>
+				</div>
+				<button type="button" class="skip"></button>
+			</div>
+		`;
+        this.root.appendChild(overlay);
+        ["click", "mousedown", "mouseup", "submit", "input", "keydown", "keyup", "touchstart", "touchend"].forEach(type => {
+            overlay.addEventListener(type, event => event.stopPropagation());
+        });
+        this.query(".label").textContent = this.t("heading");
+        this.query(".arrow-text").textContent = this.t("arrow_hint");
+        this.query(".back").textContent = this.t("back");
+        const skip = this.query(".skip");
+        if (this.skippable) {
+            skip.textContent = this.t("skip");
+            skip.addEventListener("click", () => this.complete());
+        }
+        else {
+            skip.style.display = "none";
+        }
+        this.query(".back").addEventListener("click", () => this.move(-1));
+        this.query(".next").addEventListener("click", () => {
+            if (this.currentStep >= this.steps.length - 1) {
+                this.complete();
+            }
+            else {
+                this.move(1);
+            }
+        });
+        this.spotlight = new Spotlight_1.Spotlight(this.query(".spotlight"));
+        this.onResize = () => this.renderStep();
+        window.addEventListener("resize", this.onResize);
+        document.documentElement.appendChild(this.host);
+    }
+    query(selector) {
+        return this.root.querySelector(selector);
+    }
+    move(delta) {
+        this.currentStep = Math.min(Math.max(this.currentStep + delta, 0), this.steps.length - 1);
+        this.renderStep();
+    }
+    renderStep() {
+        const step = this.steps[this.currentStep];
+        const isFirst = this.currentStep === 0;
+        const isLast = this.currentStep === this.steps.length - 1;
+        this.query(".title").textContent = this.t(step.titleKey, step.vars);
+        this.query(".body").textContent = this.t(step.bodyKey, step.vars);
+        this.renderUrlBox(step);
+        const reason = this.query(".reason");
+        const reasonKey = step.reasonKey || step.quoteKey;
+        if (reasonKey) {
+            reason.textContent = this.t(reasonKey, step.vars);
+            reason.style.display = "block";
+        }
+        else {
+            reason.style.display = "none";
+        }
+        this.query(".icon").innerHTML = ICONS[step.icon];
+        // Numerals read the same in every language; the translated wording
+        // stays available to screen readers.
+        const pad = (value) => (value < 10 ? `0${value}` : `${value}`);
+        const count = this.query(".count");
+        count.textContent = `${pad(this.currentStep + 1)} / ${pad(this.steps.length)}`;
+        count.setAttribute("aria-label", this.t("progress", { n: this.currentStep + 1, total: this.steps.length }));
+        this.query(".rail-fill").style.width = `${((this.currentStep + 1) / this.steps.length) * 100}%`;
+        this.query(".back").style.display = isFirst ? "none" : "block";
+        this.query(".next").textContent = isLast ? this.t("continue") : this.t("next");
+        this.query(".skip").style.display = this.skippable && !isLast ? "block" : "none";
+        this.query(".arrow").style.display = step.target === "url_bar" ? "flex" : "none";
+        const backdrop = this.query(".backdrop");
+        if (step.target === "element" && step.element && step.element.isConnected) {
+            backdrop.style.display = "none";
+            (0, Placement_1.revealTarget)(step.element.getBoundingClientRect(), window.innerWidth < 560 ? window.innerHeight * 0.72 : 0);
+            this.spotlight.show(step.element, rect => this.place(rect));
+        }
+        else {
+            backdrop.style.display = "block";
+            this.spotlight.hide();
+            this.place(null);
+        }
+    }
+    /**
+     * Positions the card next to the highlighted element, or centres it when
+     * no element is highlighted.
+     *
+     * @param {DOMRect | null} rect - The highlighted element's rect, if any.
+     */
+    place(rect) {
+        const card = this.query(".card");
+        // The first placement must not animate, otherwise the card visibly
+        // slides in from the top-left corner it starts at.
+        if (!this.placed) {
+            card.style.transition = "none";
+        }
+        card.setAttribute("data-placement", (0, Placement_1.placeCard)(card, rect));
+        if (!this.placed) {
+            void card.offsetHeight;
+            card.style.transition = "";
+            this.placed = true;
+        }
+    }
+    /**
+     * Shows the address the user was actually on, with the registrable
+     * domain — the part that decides where you really are — highlighted.
+     *
+     * @param {StepDefinition} step - The step being rendered.
+     */
+    renderUrlBox(step) {
+        const box = this.query(".url-box");
+        if (!step.url) {
+            box.style.display = "none";
+            return;
+        }
+        box.style.display = "block";
+        this.query(".url-label").textContent = this.t("url_actual_label");
+        const value = this.query(".url-value");
+        value.textContent = "";
+        const append = (text, className) => {
+            if (!text) {
+                return;
+            }
+            const span = document.createElement("span");
+            span.textContent = text;
+            if (className) {
+                span.className = className;
+            }
+            value.appendChild(span);
+        };
+        append(step.url.scheme);
+        append(step.url.subdomain ? `${step.url.subdomain}.` : "");
+        append(step.url.domain, "domain");
+        append(step.url.path);
+    }
+    complete() {
+        if (this.finished) {
+            return;
+        }
+        this.finished = true;
+        this.logger.info("Tutorial finished, redirecting...");
+        if (this.spotlight) {
+            this.spotlight.destroy();
+        }
+        if (this.onResize) {
+            window.removeEventListener("resize", this.onResize);
+            this.onResize = null;
+        }
+        if (this.host) {
+            this.host.remove();
+            this.host = null;
+            this.root = null;
+        }
+        this.onComplete();
+    }
+}
+exports.Tutorial = Tutorial;
+
+
+/***/ }),
+
+/***/ "./src/tutorial/TutorialContent.ts":
+/*!*****************************************!*\
+  !*** ./src/tutorial/TutorialContent.ts ***!
+  \*****************************************/
+/***/ ((__unused_webpack_module, exports, __webpack_require__) => {
+
+"use strict";
+
+Object.defineProperty(exports, "__esModule", ({ value: true }));
+exports.stepsFor = void 0;
+const Identity_1 = __webpack_require__(/*! ./Identity */ "./src/tutorial/Identity.ts");
+const UrlAnalyzer_1 = __webpack_require__(/*! ./UrlAnalyzer */ "./src/tutorial/UrlAnalyzer.ts");
+const MAX_FINDING_STEPS = 5;
+const FINDING_ORDER = ["brand_impersonation", "cc_form", "password_form", "download_link", "suspicious_link", "urgency_text"];
+const FINDING_STEPS = {
+    brand_impersonation: { titleKey: "step_brand_title", bodyKey: "step_brand_body", icon: "shield" },
+    cc_form: { titleKey: "step_cc_title", bodyKey: "step_cc_body", icon: "card" },
+    password_form: { titleKey: "step_password_title", bodyKey: "step_password_body", icon: "form" },
+    download_link: { titleKey: "step_download_title", bodyKey: "step_download_body", icon: "download" },
+    suspicious_link: { titleKey: "step_suspicious_link_title", bodyKey: "step_suspicious_link_body", icon: "link" },
+    urgency_text: { titleKey: "step_urgency_title", bodyKey: "step_urgency_body", icon: "clock" },
+};
+const PERMISSION_STEPS = {
+    mic: { titleKey: "perm_mic_title", bodyKey: "perm_mic_body", icon: "mic" },
+    webcam: { titleKey: "perm_webcam_title", bodyKey: "perm_webcam_body", icon: "webcam" },
+    location: { titleKey: "perm_location_title", bodyKey: "perm_location_body", icon: "location" },
+    notification: { titleKey: "perm_notification_title", bodyKey: "perm_notification_body", icon: "permission" },
+    clipboard: { titleKey: "perm_clipboard_title", bodyKey: "perm_clipboard_body", icon: "clipboard" },
+    extension: { titleKey: "perm_extension_title", bodyKey: "perm_extension_body", icon: "extension" },
+};
+const sortFindings = (findings) => {
+    return [...findings].sort((a, b) => FINDING_ORDER.indexOf(a.kind) - FINDING_ORDER.indexOf(b.kind));
+};
+const lessonStep = (detection) => {
+    if (detection.permissionKind) {
+        return { titleKey: "lesson_permission_title", bodyKey: "lesson_permission_body", target: "none", icon: "permission" };
+    }
+    switch (detection.type) {
+        case "login":
+            return { titleKey: "lesson_login_title", bodyKey: "lesson_login_body", target: "none", icon: "lock" };
+        case "fraud":
+            return { titleKey: "lesson_fraud_title", bodyKey: "lesson_fraud_body", target: "none", icon: "shield" };
+        case "malware":
+            return { titleKey: "lesson_malware_title", bodyKey: "lesson_malware_body", target: "none", icon: "shield" };
+        default:
+            return { titleKey: "lesson_fake_title", bodyKey: "lesson_fake_body", target: "none", icon: "shield" };
+    }
+};
+/**
+ * Assembles the ordered tutorial steps for a detection: the URL step first
+ * (explaining what specifically is wrong with this address), one spotlighted
+ * step per dangerous item found on the page, a permission-specific step when
+ * a permission was granted, a type-level lesson and the closing step.
+ *
+ * @param {Detection} detection - The result of scanning the page.
+ * @returns {StepDefinition[]} - The ordered steps to present.
+ */
+const stepsFor = (detection) => {
+    const url = (0, UrlAnalyzer_1.analyzeUrl)();
+    // Legitimate sites put their brand in the domain, phishing kits put it in a
+    // subdomain — anyone owning example.xyz can serve "yourbank.example.xyz".
+    // When that is what happened, say so instead of the generic explanation.
+    const brand = detection.findings.filter(finding => finding.kind === "brand_impersonation")[0];
+    const brandInSubdomain = brand && brand.vars && url.subdomain && (0, Identity_1.nameAppearsIn)(brand.vars.brand, url.subdomain);
+    const steps = [
+        {
+            titleKey: "step_url_title",
+            bodyKey: "step_url_body",
+            reasonKey: brandInSubdomain ? "url_reason_brand_in_subdomain" : url.reasonKey,
+            target: "url_bar",
+            vars: brandInSubdomain ? Object.assign(Object.assign({}, url.vars), { brand: brand.vars.brand }) : url.vars,
+            url,
+            icon: "url",
+        },
+    ];
+    sortFindings(detection.findings).slice(0, MAX_FINDING_STEPS).forEach(finding => {
+        var _a;
+        const definition = FINDING_STEPS[finding.kind];
+        steps.push({
+            titleKey: definition.titleKey,
+            bodyKey: definition.bodyKey,
+            quoteKey: finding.kind === "urgency_text" && ((_a = finding.vars) === null || _a === void 0 ? void 0 : _a.quote) ? "urgency_quote" : undefined,
+            target: finding.element ? "element" : "none",
+            element: finding.element,
+            vars: finding.vars,
+            icon: definition.icon,
+        });
+    });
+    if (detection.permissionKind) {
+        const definition = PERMISSION_STEPS[detection.permissionKind];
+        steps.push({ titleKey: definition.titleKey, bodyKey: definition.bodyKey, target: "none", icon: definition.icon });
+    }
+    steps.push(lessonStep(detection));
+    steps.push({ titleKey: "step_done_title", bodyKey: "step_done_body", target: "none", icon: "done" });
+    return steps;
+};
+exports.stepsFor = stepsFor;
+
+
+/***/ }),
+
+/***/ "./src/tutorial/UrlAnalyzer.ts":
+/*!*************************************!*\
+  !*** ./src/tutorial/UrlAnalyzer.ts ***!
+  \*************************************/
+/***/ ((__unused_webpack_module, exports) => {
+
+"use strict";
+
+Object.defineProperty(exports, "__esModule", ({ value: true }));
+exports.analyzeUrl = exports.MULTI_PART_SUFFIXES = void 0;
+// Two-level public suffixes we need so that the registrable domain of
+// e.g. "shop.example.co.uk" resolves to "example.co.uk" and not "co.uk".
+exports.MULTI_PART_SUFFIXES = [
+    "co.uk", "org.uk", "gov.uk", "ac.uk", "me.uk", "net.uk", "ltd.uk", "plc.uk", "sch.uk",
+    "com.br", "net.br", "org.br", "gov.br", "edu.br", "com.ar", "com.mx", "com.co", "com.pe",
+    "com.ve", "com.uy", "com.ec", "com.bo", "com.py", "com.do", "com.gt", "com.sv", "com.ni",
+    "com.au", "net.au", "org.au", "edu.au", "gov.au", "co.nz", "net.nz", "org.nz", "govt.nz",
+    "co.za", "org.za", "co.jp", "or.jp", "ne.jp", "ac.jp", "go.jp", "co.kr", "or.kr",
+    "co.in", "net.in", "org.in", "firm.in", "gen.in", "ind.in", "gov.in", "ac.in", "edu.in",
+    "com.tr", "gov.tr", "edu.tr", "com.cn", "net.cn", "org.cn", "gov.cn", "com.hk", "org.hk",
+    "com.sg", "com.my", "com.ph", "com.vn", "co.id", "co.th", "com.tw", "com.pk", "com.bd",
+    "com.pt", "com.es", "com.pl", "com.gr", "com.ro", "com.ua", "com.ru", "com.cy", "com.mt",
+    "co.il", "com.sa", "com.eg", "com.ng", "com.gh", "com.ke", "co.ke", "co.tz", "co.ug",
+    // Hosting suffixes people can register a name under, so the label in front
+    // belongs to whoever signed up, not to the platform.
+    "github.io", "gitlab.io", "netlify.app", "vercel.app", "pages.dev", "workers.dev",
+    "web.app", "firebaseapp.com", "herokuapp.com", "azurewebsites.net", "cloudfront.net",
+    "s3.amazonaws.com", "blogspot.com", "wordpress.com", "weebly.com", "wixsite.com",
+    "myshopify.com", "squarespace.com", "glitch.me", "repl.co", "surge.sh", "onrender.com",
+];
+const SUSPICIOUS_TLDS = [
+    "xyz", "top", "click", "link", "gq", "tk", "ml", "cf", "ga", "buzz", "monster", "rest",
+    "country", "loan", "work", "fit", "surf", "cam", "zip", "mov", "quest", "cfd", "sbs", "icu",
+];
+// Anchored to label boundaries: without this, "paid.example.com" matches "id"
+// and "academy.example.com" matches "my".
+const BRANDISH_SUBDOMAIN_PATTERN = /(^|[.-])(login|signin|sign-in|secure|security|verify|verification|account|accounts|auth|update|confirm|support|billing|payment|webmail|mail|portal|service|id|my)([.-]|$)/i;
+const IPV4_PATTERN = /^\d{1,3}(\.\d{1,3}){3}$/;
+// URL.hostname wraps IPv6 literals in brackets.
+const IPV6_PATTERN = /^\[[0-9a-f:]+\]$/i;
+/**
+ * Splits a hostname into its registrable domain and the subdomain prefix.
+ *
+ * @param {string} host - The hostname to split.
+ * @returns {[string, string]} - A tuple of [subdomain, registrableDomain].
+ */
+const splitHost = (host) => {
+    const labels = host.split(".");
+    if (labels.length <= 2) {
+        return ["", host];
+    }
+    const lastTwo = labels.slice(-2).join(".");
+    const size = exports.MULTI_PART_SUFFIXES.includes(lastTwo) ? 3 : 2;
+    return [labels.slice(0, -size).join("."), labels.slice(-size).join(".")];
+};
+/**
+ * Analyses the current URL and decides which explanation best describes
+ * why the address should have raised suspicion.
+ *
+ * @param {string} [href=window.location.href] - The URL to analyse.
+ * @returns {UrlAnalysis} - The parsed URL parts plus the explanation key and its variables.
+ */
+const analyzeUrl = (href = window.location.href) => {
+    let url;
+    try {
+        url = new URL(href);
+    }
+    catch (_a) {
+        return { href, scheme: "", host: href, subdomain: "", domain: href, path: "", reasonKey: "url_reason_generic", vars: { domain: href } };
+    }
+    const host = url.hostname;
+    // "https://microsoft.com@evil.example/" reads as Microsoft to a victim, so
+    // the userinfo has to stay visible; likewise a non-default port.
+    const credentials = url.username ? `${url.username}${url.password ? ":" + url.password : ""}@` : "";
+    const port = url.port ? `:${url.port}` : "";
+    const [subdomain, domain] = splitHost(host);
+    const tld = domain.split(".").pop() || "";
+    const fullPath = `${port}${url.pathname === "/" ? "" : url.pathname}${url.search}${url.hash}`;
+    const path = fullPath.length > 42 ? `${fullPath.slice(0, 42)}…` : fullPath;
+    const base = {
+        href,
+        scheme: `${url.protocol}//${credentials}`,
+        host,
+        subdomain,
+        domain,
+        path,
+    };
+    // A long, cluttered address is itself a warning sign: legitimate sign-in
+    // pages sit on a short domain, not a chain of subdomains and random text.
+    const visible = `${host}${url.pathname}`;
+    const isCluttered = host.split(".").length >= 4
+        || visible.length > 60
+        || /\d{4,}/.test(host)
+        || (host.match(/-/g) || []).length >= 3
+        || /[a-z0-9]{20,}/i.test(host);
+    let reasonKey = "url_reason_generic";
+    if (IPV4_PATTERN.test(host) || IPV6_PATTERN.test(host)) {
+        reasonKey = "url_reason_ip";
+    }
+    else if (host.indexOf("xn--") !== -1) {
+        reasonKey = "url_reason_punycode";
+    }
+    else if (subdomain && BRANDISH_SUBDOMAIN_PATTERN.test(subdomain)) {
+        reasonKey = "url_reason_brand_subdomain";
+    }
+    else if (isCluttered) {
+        reasonKey = "url_reason_long";
+    }
+    else if (SUSPICIOUS_TLDS.includes(tld)) {
+        reasonKey = "url_reason_tld";
+    }
+    else if (domain.indexOf("-") !== -1) {
+        reasonKey = "url_reason_hyphen";
+    }
+    return Object.assign(Object.assign({}, base), { reasonKey, vars: { host, domain, subdomain, tld } });
+};
+exports.analyzeUrl = analyzeUrl;
+
+
+/***/ }),
+
+/***/ "./src/tutorial/brands.ts":
+/*!********************************!*\
+  !*** ./src/tutorial/brands.ts ***!
+  \********************************/
+/***/ ((__unused_webpack_module, exports) => {
+
+"use strict";
+
+Object.defineProperty(exports, "__esModule", ({ value: true }));
+exports.matchBrand = exports.canonicalBrand = exports.brandForms = exports.acronymOf = exports.normalize = exports.BRANDS = void 0;
+/**
+ * A short list of frequently imitated brands. This is deliberately NOT the
+ * mechanism that detects impersonation — no bundled list could cover every
+ * brand in every language, and it would go stale immediately.
+ *
+ * Impersonation is decided by Identity.ts, which compares the name a page
+ * claims for itself against the domain it is served from, and by the brand
+ * the campaign declares (the `brand` option or `ats_brand` in the token).
+ *
+ * This list only does two small jobs:
+ *   1. normalise a product name to its owner, so "Outlook", "OneDrive" and
+ *      "Office 365" all show up as "Microsoft";
+ *   2. recognise names written as abbreviations ("BT24", "NBG", "CGD") that
+ *      the generic logic would otherwise treat as meaningless tokens.
+ */
+exports.BRANDS = [
+    // --- global technology & workplace ---
+    { name: "Microsoft", aliases: ["microsoft", "microsoft 365", "office 365", "office365", "microsoft office", "outlook", "onedrive", "sharepoint", "microsoft teams", "windows live", "azure"], short: ["o365"] },
+    { name: "Google", aliases: ["google", "gmail", "google drive", "google workspace", "google account"] },
+    { name: "Apple", aliases: ["apple", "icloud", "apple id", "itunes"] },
+    { name: "Amazon", aliases: ["amazon", "amazon web services", "aws", "prime video"] },
+    { name: "Meta", aliases: ["facebook", "instagram", "whatsapp", "messenger", "meta business"] },
+    { name: "LinkedIn", aliases: ["linkedin"] },
+    { name: "X", aliases: ["twitter"] },
+    { name: "TikTok", aliases: ["tiktok"] },
+    { name: "Telegram", aliases: ["telegram"] },
+    { name: "Snapchat", aliases: ["snapchat"] },
+    { name: "Netflix", aliases: ["netflix"] },
+    { name: "Spotify", aliases: ["spotify"] },
+    { name: "Disney+", aliases: ["disney plus", "disney+"] },
+    { name: "HBO Max", aliases: ["hbo max", "hbo"] },
+    { name: "Dropbox", aliases: ["dropbox"] },
+    { name: "DocuSign", aliases: ["docusign"] },
+    { name: "Adobe", aliases: ["adobe", "adobe acrobat", "adobe sign"] },
+    { name: "WeTransfer", aliases: ["wetransfer"] },
+    { name: "Zoom", aliases: ["zoom"] },
+    { name: "Slack", aliases: ["slack"] },
+    { name: "Salesforce", aliases: ["salesforce"] },
+    { name: "Oracle", aliases: ["oracle"] },
+    { name: "SAP", aliases: ["sap concur"], short: ["sap"] },
+    { name: "IBM", aliases: ["ibm"] },
+    { name: "GitHub", aliases: ["github"] },
+    { name: "GitLab", aliases: ["gitlab"] },
+    { name: "Atlassian", aliases: ["atlassian", "jira", "confluence"] },
+    { name: "Notion", aliases: ["notion"] },
+    { name: "Canva", aliases: ["canva"] },
+    { name: "OpenAI", aliases: ["openai", "chatgpt"] },
+    { name: "Booking.com", aliases: ["booking com", "booking.com"] },
+    { name: "Airbnb", aliases: ["airbnb"] },
+    { name: "Uber", aliases: ["uber", "uber eats"] },
+    { name: "eBay", aliases: ["ebay"] },
+    { name: "AliExpress", aliases: ["aliexpress", "alibaba"] },
+    { name: "Temu", aliases: ["temu"] },
+    { name: "Shein", aliases: ["shein"] },
+    { name: "Steam", aliases: ["steam", "steam community"] },
+    { name: "Epic Games", aliases: ["epic games", "fortnite"] },
+    { name: "PlayStation", aliases: ["playstation", "psn"] },
+    { name: "Xbox", aliases: ["xbox"] },
+    { name: "Roblox", aliases: ["roblox"] },
+    { name: "Discord", aliases: ["discord"] },
+    { name: "Twitch", aliases: ["twitch"] },
+    // --- payments, cards & crypto ---
+    { name: "PayPal", aliases: ["paypal"] },
+    { name: "Stripe", aliases: ["stripe"] },
+    { name: "Visa", aliases: ["visa"] },
+    { name: "Mastercard", aliases: ["mastercard", "maestro"] },
+    { name: "American Express", aliases: ["american express", "americanexpress", "amex"] },
+    { name: "Revolut", aliases: ["revolut"] },
+    { name: "Wise", aliases: ["transferwise"] },
+    { name: "N26", aliases: ["n26"] },
+    { name: "Klarna", aliases: ["klarna"] },
+    { name: "Payoneer", aliases: ["payoneer"] },
+    { name: "Skrill", aliases: ["skrill"] },
+    { name: "Western Union", aliases: ["western union", "moneygram"] },
+    { name: "Mercado Pago", aliases: ["mercado pago", "mercadopago", "mercado libre", "mercadolibre"] },
+    { name: "MB WAY", aliases: ["mb way", "mbway"] },
+    { name: "Bizum", aliases: ["bizum"] },
+    { name: "Binance", aliases: ["binance"] },
+    { name: "Coinbase", aliases: ["coinbase"] },
+    { name: "Kraken", aliases: ["kraken"] },
+    { name: "MetaMask", aliases: ["metamask"] },
+    { name: "Ledger", aliases: ["ledger live"] },
+    { name: "Crypto.com", aliases: ["crypto com", "crypto.com"] },
+    // --- banks: Romania ---
+    { name: "Banca Transilvania", aliases: ["banca transilvania", "bancatransilvania", "neobt", "bt pay", "bt24"], short: ["bt"] },
+    { name: "BCR", aliases: ["banca comerciala romana", "george bcr"], short: ["bcr"] },
+    { name: "BRD", aliases: ["banca romana pentru dezvoltare", "brd groupe societe generale", "you brd"], short: ["brd"] },
+    { name: "ING", aliases: ["ing bank", "ing direct", "ing home bank", "home'bank"], short: ["ing"] },
+    { name: "Raiffeisen Bank", aliases: ["raiffeisen", "raiffeisenbank", "smart mobile raiffeisen"] },
+    { name: "UniCredit", aliases: ["unicredit", "unicredit bank"] },
+    { name: "CEC Bank", aliases: ["cec bank"], short: ["cec"] },
+    { name: "Alpha Bank", aliases: ["alpha bank"] },
+    { name: "OTP Bank", aliases: ["otp bank", "otpdirekt"] },
+    { name: "First Bank", aliases: ["first bank"] },
+    { name: "Libra Internet Bank", aliases: ["libra internet bank", "libra bank"] },
+    { name: "Patria Bank", aliases: ["patria bank"] },
+    { name: "Garanti BBVA", aliases: ["garanti bbva", "garanti bank"] },
+    { name: "Erste", aliases: ["erste bank", "erste group"] },
+    { name: "Intesa Sanpaolo", aliases: ["intesa sanpaolo", "intesa"] },
+    // --- banks: Spain & Latin America ---
+    { name: "Santander", aliases: ["santander", "banco santander", "santander totta"] },
+    { name: "BBVA", aliases: ["bbva"] },
+    { name: "CaixaBank", aliases: ["caixabank", "la caixa", "imagin"] },
+    { name: "Banco Sabadell", aliases: ["banco sabadell", "sabadell"] },
+    { name: "Bankinter", aliases: ["bankinter"] },
+    { name: "Unicaja", aliases: ["unicaja"] },
+    { name: "Ibercaja", aliases: ["ibercaja"] },
+    { name: "Kutxabank", aliases: ["kutxabank"] },
+    { name: "Openbank", aliases: ["openbank"] },
+    { name: "Abanca", aliases: ["abanca"] },
+    { name: "Cajamar", aliases: ["cajamar"] },
+    { name: "Banorte", aliases: ["banorte"] },
+    { name: "Citibanamex", aliases: ["citibanamex", "banamex"] },
+    { name: "Bancolombia", aliases: ["bancolombia"] },
+    { name: "Davivienda", aliases: ["davivienda"] },
+    { name: "Banco de Chile", aliases: ["banco de chile"] },
+    { name: "Scotiabank", aliases: ["scotiabank"] },
+    { name: "Interbank", aliases: ["interbank"] },
+    { name: "Banco de Crédito", aliases: ["banco de credito", "viabcp"] },
+    // --- banks: Portugal & Brazil ---
+    { name: "Caixa Geral de Depósitos", aliases: ["caixa geral de depositos", "caixadirecta"], short: ["cgd"] },
+    { name: "Millennium BCP", aliases: ["millennium bcp", "millennium"], short: ["bcp"] },
+    { name: "Novo Banco", aliases: ["novo banco"] },
+    { name: "Banco BPI", aliases: ["banco bpi"], short: ["bpi"] },
+    { name: "Montepio", aliases: ["montepio"] },
+    { name: "Crédito Agrícola", aliases: ["credito agricola"] },
+    { name: "ActivoBank", aliases: ["activobank"] },
+    { name: "Itaú", aliases: ["itau", "itau unibanco"] },
+    { name: "Bradesco", aliases: ["bradesco"] },
+    { name: "Banco do Brasil", aliases: ["banco do brasil"] },
+    { name: "Caixa Econômica Federal", aliases: ["caixa economica federal", "caixa economica"] },
+    { name: "Nubank", aliases: ["nubank"] },
+    { name: "Sicredi", aliases: ["sicredi"] },
+    { name: "PicPay", aliases: ["picpay"] },
+    // --- banks: France ---
+    { name: "BNP Paribas", aliases: ["bnp paribas", "bnpparibas"] },
+    { name: "Société Générale", aliases: ["societe generale", "sogecash"] },
+    { name: "Crédit Agricole", aliases: ["credit agricole"] },
+    { name: "LCL", aliases: ["lcl banque"], short: ["lcl"] },
+    { name: "Caisse d'Épargne", aliases: ["caisse d epargne", "caisse depargne"] },
+    { name: "Banque Populaire", aliases: ["banque populaire"] },
+    { name: "La Banque Postale", aliases: ["la banque postale"] },
+    { name: "Crédit Mutuel", aliases: ["credit mutuel"] },
+    { name: "CIC", aliases: ["cic banque"], short: ["cic"] },
+    { name: "Boursorama", aliases: ["boursorama", "boursobank"] },
+    { name: "Fortuneo", aliases: ["fortuneo"] },
+    // --- banks: Germany & Austria ---
+    { name: "Sparkasse", aliases: ["sparkasse", "sparkassen"] },
+    { name: "Volksbank", aliases: ["volksbank", "raiffeisenbank volksbank"] },
+    { name: "Deutsche Bank", aliases: ["deutsche bank"] },
+    { name: "Commerzbank", aliases: ["commerzbank"] },
+    { name: "Postbank", aliases: ["postbank"] },
+    { name: "DKB", aliases: ["deutsche kreditbank"], short: ["dkb"] },
+    { name: "Comdirect", aliases: ["comdirect"] },
+    { name: "Targobank", aliases: ["targobank"] },
+    { name: "HypoVereinsbank", aliases: ["hypovereinsbank"] },
+    // --- banks: Greece ---
+    { name: "Εθνική Τράπεζα", aliases: ["εθνικη τραπεζα", "national bank of greece", "ibank εθνικη"], short: ["nbg"] },
+    { name: "Τράπεζα Πειραιώς", aliases: ["τραπεζα πειραιως", "πειραιως", "piraeus bank", "winbank"] },
+    { name: "Eurobank", aliases: ["eurobank"] },
+    { name: "Attica Bank", aliases: ["attica bank"] },
+    { name: "Optima Bank", aliases: ["optima bank"] },
+    // --- banks: UK, US & other ---
+    { name: "HSBC", aliases: ["hsbc"] },
+    { name: "Barclays", aliases: ["barclays"] },
+    { name: "Lloyds Bank", aliases: ["lloyds"] },
+    { name: "NatWest", aliases: ["natwest"] },
+    { name: "Halifax", aliases: ["halifax"] },
+    { name: "Monzo", aliases: ["monzo"] },
+    { name: "Starling Bank", aliases: ["starling bank"] },
+    { name: "Chase", aliases: ["chase bank", "jpmorgan chase"] },
+    { name: "Wells Fargo", aliases: ["wells fargo"] },
+    { name: "Citibank", aliases: ["citibank", "citigroup"] },
+    { name: "Bank of America", aliases: ["bank of america"] },
+    { name: "Capital One", aliases: ["capital one"] },
+    { name: "Rabobank", aliases: ["rabobank"] },
+    // --- post & couriers ---
+    { name: "DHL", aliases: ["dhl"] },
+    { name: "FedEx", aliases: ["fedex"] },
+    { name: "UPS", aliases: ["united parcel service"], short: ["ups"] },
+    { name: "USPS", aliases: ["usps"] },
+    { name: "DPD", aliases: ["dpd"] },
+    { name: "GLS", aliases: ["gls"] },
+    { name: "InPost", aliases: ["inpost"] },
+    { name: "Royal Mail", aliases: ["royal mail"] },
+    { name: "Poșta Română", aliases: ["posta romana"] },
+    { name: "FAN Courier", aliases: ["fan courier", "fancourier"] },
+    { name: "Sameday", aliases: ["sameday"] },
+    { name: "Cargus", aliases: ["cargus", "urgent cargus"] },
+    { name: "Correos", aliases: ["correos", "correos express"] },
+    { name: "SEUR", aliases: ["seur"] },
+    { name: "MRW", aliases: ["mrw"] },
+    { name: "CTT", aliases: ["ctt expresso", "ctt correios"] },
+    { name: "La Poste", aliases: ["la poste", "colissimo", "chronopost"] },
+    { name: "Mondial Relay", aliases: ["mondial relay"] },
+    { name: "Deutsche Post", aliases: ["deutsche post", "packstation"] },
+    { name: "Hermes", aliases: ["hermes versand", "evri"] },
+    { name: "ΕΛΤΑ", aliases: ["ελτα courier", "elta courier"] },
+    { name: "ACS Courier", aliases: ["acs courier"] },
+    // --- telecom & utilities ---
+    { name: "Orange", aliases: ["orange"] },
+    { name: "Vodafone", aliases: ["vodafone"] },
+    { name: "Telekom", aliases: ["telekom", "deutsche telekom", "magenta"] },
+    { name: "Digi", aliases: ["digi mobil", "rcs rds", "digi romania"] },
+    { name: "Movistar", aliases: ["movistar", "telefonica"] },
+    { name: "MEO", aliases: ["meo altice"], short: ["meo"] },
+    { name: "NOS", aliases: ["nos comunicacoes"], short: ["nos"] },
+    { name: "SFR", aliases: ["sfr"] },
+    { name: "Bouygues Telecom", aliases: ["bouygues"] },
+    { name: "Free", aliases: ["free mobile"] },
+    { name: "COSMOTE", aliases: ["cosmote"] },
+    { name: "Enel", aliases: ["enel", "e distributie"] },
+    { name: "Engie", aliases: ["engie"] },
+    { name: "E.ON", aliases: ["e on energie"] },
+    { name: "EDP", aliases: ["edp comercial"], short: ["edp"] },
+    { name: "Iberdrola", aliases: ["iberdrola"] },
+    { name: "Endesa", aliases: ["endesa"] },
+    { name: "Naturgy", aliases: ["naturgy"] },
+    { name: "EDF", aliases: ["edf energie"], short: ["edf"] },
+    // --- tax, government & health ---
+    { name: "ANAF", aliases: ["anaf", "spatiul privat virtual"] },
+    { name: "Ghișeul.ro", aliases: ["ghiseul ro", "ghiseul.ro"] },
+    { name: "Agencia Tributaria", aliases: ["agencia tributaria", "hacienda"] },
+    { name: "Seguridad Social", aliases: ["seguridad social"] },
+    { name: "Autoridade Tributária", aliases: ["autoridade tributaria", "portal das financas"] },
+    { name: "Segurança Social", aliases: ["seguranca social"] },
+    { name: "impots.gouv.fr", aliases: ["impots gouv", "impots.gouv", "direction generale des finances publiques"] },
+    { name: "Ameli", aliases: ["ameli", "assurance maladie"] },
+    { name: "URSSAF", aliases: ["urssaf"] },
+    { name: "ELSTER", aliases: ["elster", "finanzamt"] },
+    { name: "ΑΑΔΕ", aliases: ["ααδε", "taxisnet", "aade"] },
+    { name: "GOV.UK", aliases: ["gov uk", "hmrc"] },
+    { name: "IRS", aliases: ["internal revenue service"], short: ["irs"] },
+];
+const DIACRITICS = /[̀-ͯ]/g;
+/**
+ * Lowercases text and strips diacritics so that "Société Générale",
+ * "Societe Generale" and "SOCIÉTÉ GÉNÉRALE" all compare equal. Punctuation
+ * collapses to single spaces, which also makes "banca-transilvania" and
+ * "banca_transilvania" match.
+ *
+ * @param {string} value - The text to normalise.
+ * @returns {string} - The normalised text, padded with spaces for word matching.
+ */
+const normalize = (value) => {
+    const stripped = value.normalize ? value.normalize("NFD").replace(DIACRITICS, "") : value;
+    return ` ${stripped.toLowerCase().replace(/[^a-z0-9Ͱ-Ͽἀ-῿]+/g, " ").trim()} `;
+};
+exports.normalize = normalize;
+const flatten = (value) => (0, exports.normalize)(value).trim().replace(/ /g, "");
+// Linking words that never contribute a letter to an acronym:
+// "Caixa Geral de Depósitos" is CGD, not CGDD.
+const ACRONYM_FILLERS = [
+    "de", "del", "da", "das", "do", "dos", "des", "du", "di", "der", "die", "das", "van", "von",
+    "la", "le", "les", "el", "los", "las", "of", "the", "and", "und", "et", "y", "e", "o", "a", "al",
+    "per", "pour", "fur", "για", "και", "του", "της", "των", "στο", "pentru", "si",
+];
+// Two-letter acronyms that are far more likely to mean something else in a
+// hostname — country codes and infrastructure names. A brand whose initials
+// land here simply doesn't get an auto-generated abbreviation; anything that
+// genuinely uses one can declare it in the catalogue instead.
+// Every ISO 3166 alpha-2 code is a live ccTLD and a very common hostname
+// label, so no two-letter acronym that collides with one is trustworthy.
+const COUNTRY_CODES = ("ad ae af ag ai al am ao aq ar as at au aw ax az ba bb bd be bf bg bh bi bj bl bm bn bo bq br bs bt bv bw by bz "
+    + "ca cc cd cf cg ch ci ck cl cm cn co cr cu cv cw cx cy cz de dj dk dm do dz ec ee eg eh er es et fi fj fk fm fo fr "
+    + "ga gb gd ge gf gg gh gi gl gm gn gp gq gr gs gt gu gw gy hk hm hn hr ht hu id ie il im in io iq ir is it je jm jo jp "
+    + "ke kg kh ki km kn kp kr kw ky kz la lb lc li lk lr ls lt lu lv ly ma mc md me mf mg mh mk ml mm mn mo mp mq mr ms mt "
+    + "mu mv mw mx my mz na nc ne nf ng ni nl no np nr nu nz om pa pe pf pg ph pk pl pm pn pr ps pt pw py qa re ro rs ru rw "
+    + "sa sb sc sd se sg sh si sj sk sl sm sn so sr ss st sv sx sy sz tc td tf tg th tj tk tl tm tn to tr tt tv tw tz ua ug "
+    + "um us uy uz va vc ve vg vi vn vu wf ws ye yt za zm zw").split(" ");
+// Plus infrastructure and product labels that appear in hostnames constantly.
+const AMBIGUOUS_ACRONYMS = COUNTRY_CODES.concat([
+    "db", "ui", "ux", "hq", "vm", "pc", "os", "ip", "ns", "cdn", "api", "app", "dev", "www", "ftp",
+    "sso", "vpn", "crm", "erp", "cms", "faq", "hr", "pr", "it", "ai", "ml", "ci", "cd", "qa",
+]);
+/**
+ * Builds the initials of a multi-word name: "Banca Transilvania" -> "bt",
+ * "National Bank of Greece" -> "nbg". Returns an empty string when the name
+ * is a single word or the initials would be too ambiguous to be useful.
+ *
+ * @param {string} name - The brand's display name.
+ * @returns {string} - The acronym, or an empty string.
+ */
+const acronymOf = (name) => {
+    const words = (0, exports.normalize)(name).trim().split(" ").filter(word => word && ACRONYM_FILLERS.indexOf(word) === -1);
+    if (words.length < 2) {
+        return "";
+    }
+    const acronym = words.map(word => word.charAt(0)).join("");
+    // Three letters minimum. Every two-letter combination is either a country
+    // code or an infrastructure label somewhere, so guessing them creates more
+    // false matches than it catches. Brands that really do use a two-letter
+    // abbreviation ("BT", "ING") declare it in the catalogue, where it has
+    // been checked by hand.
+    if (acronym.length < 3 || AMBIGUOUS_ACRONYMS.indexOf(acronym) !== -1) {
+        return "";
+    }
+    return acronym;
+};
+exports.acronymOf = acronymOf;
+/**
+ * Lists every way a brand may be written inside a hostname. Campaigns often
+ * shorten the name in the subdomain — "bt.example.com" for Banca Transilvania
+ * — so the abbreviations we know about have to be searchable too.
+ *
+ * @param {string} name - The brand's display name.
+ * @returns {BrandForms} - Full spellings and abbreviations, normalised.
+ */
+const brandForms = (name) => {
+    const entry = exports.BRANDS.filter(brand => brand.name === name)[0];
+    const full = [flatten(name)];
+    const abbreviations = [];
+    if (entry) {
+        (entry.aliases || []).forEach(alias => full.push(flatten(alias)));
+        (entry.short || []).forEach(alias => abbreviations.push(flatten(alias)));
+    }
+    // Works for brands we have never seen: "Cooperativa Ardeal" -> "ca" is
+    // dropped as ambiguous, "Mutuelle Rhodanienne du Sud" -> "mrs" is kept.
+    const acronym = (0, exports.acronymOf)(name);
+    if (acronym && abbreviations.indexOf(acronym) === -1) {
+        abbreviations.push(acronym);
+    }
+    return { full: full.filter(Boolean), abbreviations: abbreviations.filter(Boolean) };
+};
+exports.brandForms = brandForms;
+/**
+ * Maps a name onto its canonical owner when we happen to know it, so that
+ * "Office 365" is reported as "Microsoft" and "BT24" as "Banca Transilvania".
+ * Returns null for anything unknown, which the caller then uses verbatim.
+ *
+ * @param {string} value - The name as written on the page.
+ * @returns {string | null} - The canonical brand name, or null.
+ */
+const canonicalBrand = (value) => (0, exports.matchBrand)(value);
+exports.canonicalBrand = canonicalBrand;
+/**
+ * Finds a known brand named in the given text.
+ *
+ * @param {string} value - The raw text to inspect.
+ * @returns {string | null} - The brand's display name, or null.
+ */
+const matchBrand = (value) => {
+    const haystack = (0, exports.normalize)(value);
+    for (const brand of exports.BRANDS) {
+        for (const alias of brand.aliases || []) {
+            if (haystack.indexOf(` ${(0, exports.normalize)(alias).trim()} `) !== -1) {
+                return brand.name;
+            }
+        }
+        // Abbreviations only count when written in capitals, which keeps "ING"
+        // apart from an "-ing" word ending and "NOS" from the Portuguese "nos".
+        for (const alias of brand.short || []) {
+            if (new RegExp(`(^|[^A-Za-z0-9])${alias.toUpperCase()}([^A-Za-z0-9]|$)`).test(value)) {
+                return brand.name;
+            }
+        }
+    }
+    return null;
+};
+exports.matchBrand = matchBrand;
+
+
+/***/ }),
+
+/***/ "./src/tutorial/overlay.styles.ts":
+/*!****************************************!*\
+  !*** ./src/tutorial/overlay.styles.ts ***!
+  \****************************************/
+/***/ ((__unused_webpack_module, exports) => {
+
+"use strict";
+
+Object.defineProperty(exports, "__esModule", ({ value: true }));
+exports.OVERLAY_CSS = void 0;
+exports.OVERLAY_CSS = `
+:host {
+	all: initial;
+}
+
+* {
+	box-sizing: border-box;
+	margin: 0;
+	padding: 0;
+}
+
+.overlay {
+	position: fixed;
+	top: 0;
+	right: 0;
+	bottom: 0;
+	left: 0;
+	inset: 0;
+	z-index: 2147483647;
+	font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Inter, Roboto, Helvetica, Arial, sans-serif;
+	-webkit-font-smoothing: antialiased;
+	pointer-events: auto;
+}
+
+.backdrop {
+	position: absolute;
+	top: 0;
+	right: 0;
+	bottom: 0;
+	left: 0;
+	inset: 0;
+	background: rgba(8, 6, 12, 0.7);
+	backdrop-filter: blur(6px) saturate(0.7);
+	-webkit-backdrop-filter: blur(6px) saturate(0.7);
+	animation: ats-fade 0.4s ease-out both;
+}
+
+/* ---- spotlight: dim + blur everything but the target ---- */
+
+.spotlight {
+	position: absolute;
+	top: 0;
+	right: 0;
+	bottom: 0;
+	left: 0;
+	inset: 0;
+	pointer-events: none;
+}
+
+.spotlight .cut-top,
+.spotlight .cut-bottom,
+.spotlight .cut-left,
+.spotlight .cut-right {
+	position: absolute;
+	background: rgba(8, 6, 12, 0.7);
+	backdrop-filter: blur(6px) saturate(0.7);
+	-webkit-backdrop-filter: blur(6px) saturate(0.7);
+}
+
+.spotlight .ring {
+	position: absolute;
+	border-radius: 10px;
+	box-shadow: 0 0 0 2px rgba(255, 51, 102, 0.55), 0 0 46px rgba(255, 51, 102, 0.35);
+	animation: ats-reticle 2.2s ease-in-out infinite;
+}
+
+.spotlight .ring i {
+	position: absolute;
+	width: 20px;
+	height: 20px;
+	border: 3px solid #ff3366;
+}
+
+.spotlight .ring i:nth-child(1) { top: -3px; left: -3px; border-right: 0; border-bottom: 0; border-radius: 10px 0 0 0; }
+.spotlight .ring i:nth-child(2) { top: -3px; right: -3px; border-left: 0; border-bottom: 0; border-radius: 0 10px 0 0; }
+.spotlight .ring i:nth-child(3) { bottom: -3px; left: -3px; border-right: 0; border-top: 0; border-radius: 0 0 0 10px; }
+.spotlight .ring i:nth-child(4) { bottom: -3px; right: -3px; border-left: 0; border-top: 0; border-radius: 0 0 10px 0; }
+
+/* ---- pointer to the browser address bar ---- */
+
+/* One compact object rather than a floating chevron, a tail and a glow: a
+   single pill whose inline arrow does the pointing. */
+.arrow {
+	position: fixed;
+	top: 12px;
+	left: 50%;
+	transform: translateX(-50%);
+	pointer-events: none;
+}
+
+.arrow-hint {
+	display: flex;
+	align-items: center;
+	gap: 9px;
+	background: #ff3366;
+	color: #1c0810;
+	font-size: 12.5px;
+	font-weight: 650;
+	letter-spacing: 0.005em;
+	padding: 6px 16px 6px 6px;
+	border-radius: 999px;
+	white-space: nowrap;
+	box-shadow: 0 6px 22px rgba(0, 0, 0, 0.38);
+}
+
+.arrow-mark {
+	flex: none;
+	width: 23px;
+	height: 23px;
+	border-radius: 50%;
+	background: rgba(28, 8, 16, 0.16);
+	display: flex;
+	align-items: center;
+	justify-content: center;
+	animation: ats-nudge 1.9s ease-in-out infinite;
+}
+
+.arrow-mark svg {
+	width: 12px;
+	height: 12px;
+	display: block;
+}
+
+/* ---- card: bold red, with the sharp corner aimed at the target ---- */
+
+.card {
+	position: fixed;
+	left: 0;
+	top: 0;
+	overflow: hidden auto;
+	background: linear-gradient(155deg, #ff4470 0%, #ff3366 42%, #e11d48 100%);
+	border-radius: 30px 30px 30px 6px;
+	corner-shape: squircle;
+	box-shadow: 0 28px 70px rgba(180, 12, 55, 0.5), 0 0 0 1px rgba(255, 255, 255, 0.3) inset;
+	padding: 0 28px 24px;
+	color: #1c0810;
+	transition: left 0.34s cubic-bezier(0.16, 1, 0.3, 1), top 0.34s cubic-bezier(0.16, 1, 0.3, 1), width 0.34s cubic-bezier(0.16, 1, 0.3, 1), border-radius 0.34s ease;
+	animation: ats-enter 0.44s cubic-bezier(0.16, 1, 0.3, 1) both;
+}
+
+/* the blunt-cut corner points back at whatever is highlighted */
+.card[data-placement="right"] { border-radius: 6px 30px 30px 30px; }
+.card[data-placement="left"] { border-radius: 30px 6px 30px 30px; }
+.card[data-placement="bottom"] { border-radius: 6px 30px 30px 30px; }
+.card[data-placement="top"] { border-radius: 30px 30px 30px 6px; }
+.card[data-placement="center"] { border-radius: 30px; }
+
+.card[data-placement="sheet"] {
+	border-radius: 28px 28px 0 0;
+	corner-shape: squircle;
+	padding: 0 20px 20px;
+}
+
+.card[data-placement="sheet"] .rail { margin: 0 -20px 22px; }
+
+/* hazard hatching in the corner */
+.card::after {
+	content: "";
+	position: absolute;
+	top: 0;
+	right: 0;
+	width: 130px;
+	height: 130px;
+	pointer-events: none;
+	background: repeating-linear-gradient(-45deg, rgba(28, 8, 16, 0.07) 0 6px, transparent 6px 14px);
+	-webkit-mask-image: linear-gradient(225deg, #000, transparent 70%);
+	mask-image: linear-gradient(225deg, #000, transparent 70%);
+}
+
+.rail {
+	position: sticky;
+	top: 0;
+	height: 3px;
+	margin: 0 -28px 26px;
+	background: rgba(255, 255, 255, 0.35);
+	z-index: 1;
+}
+
+.rail-fill {
+	display: block;
+	height: 100%;
+	width: 0;
+	background: #1c0810;
+	transition: width 0.45s cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+.head {
+	display: flex;
+	align-items: center;
+	gap: 9px;
+	margin-bottom: 18px;
+	position: relative;
+}
+
+.head .icon {
+	display: flex;
+	width: 21px;
+	height: 21px;
+	flex: none;
+}
+
+.head .icon svg {
+	width: 21px;
+	height: 21px;
+}
+
+.head .label {
+	font-size: 10.5px;
+	font-weight: 800;
+	letter-spacing: 0.15em;
+	text-transform: uppercase;
+	color: #2b0c16;
+}
+
+.head .count {
+	margin-left: auto;
+	font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+	font-size: 11px;
+	font-weight: 600;
+	letter-spacing: 0.08em;
+	color: #3a1220;
+}
+
+.title {
+	font-size: 25px;
+	font-weight: 800;
+	letter-spacing: -0.028em;
+	line-height: 1.14;
+	margin-bottom: 12px;
+	animation: ats-slide 0.5s cubic-bezier(0.16, 1, 0.3, 1) both;
+}
+
+.body {
+	font-size: 14.5px;
+	line-height: 1.62;
+	color: #2b0c16;
+	margin-bottom: 18px;
+	animation: ats-slide 0.5s cubic-bezier(0.16, 1, 0.3, 1) 0.05s both;
+}
+
+.url-box {
+	background: rgba(255, 255, 255, 0.42);
+	border-radius: 14px 14px 14px 4px;
+	corner-shape: squircle;
+	padding: 12px 14px;
+	margin-bottom: 16px;
+	animation: ats-slide 0.5s cubic-bezier(0.16, 1, 0.3, 1) 0.1s both;
+}
+
+.url-label {
+	display: block;
+	font-size: 9.5px;
+	font-weight: 700;
+	letter-spacing: 0.16em;
+	text-transform: uppercase;
+	color: #3a1220;
+	margin-bottom: 8px;
+}
+
+.url-value {
+	font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+	font-size: 12.5px;
+	line-height: 1.75;
+	color: #3a1220;
+	word-break: break-all;
+}
+
+.url-value .domain {
+	background: #1c0810;
+	color: #ffd7e0;
+	font-weight: 700;
+	border-radius: 5px;
+	corner-shape: squircle;
+	padding: 2px 5px;
+}
+
+.reason {
+	position: relative;
+	font-size: 14px;
+	line-height: 1.58;
+	color: #1c0810;
+	background: rgba(255, 255, 255, 0.42);
+	border-radius: 14px 14px 14px 4px;
+	corner-shape: squircle;
+	padding: 13px 15px 13px 17px;
+	margin-bottom: 22px;
+	animation: ats-slide 0.5s cubic-bezier(0.16, 1, 0.3, 1) 0.15s both;
+}
+
+.reason::before {
+	content: "";
+	position: absolute;
+	top: 13px;
+	bottom: 13px;
+	left: 0;
+	width: 3px;
+	border-radius: 0 3px 3px 0;
+	background: #1c0810;
+}
+
+.actions {
+	display: flex;
+	gap: 8px;
+	animation: ats-slide 0.5s cubic-bezier(0.16, 1, 0.3, 1) 0.2s both;
+}
+
+.btn {
+	appearance: none;
+	cursor: pointer;
+	font-family: inherit;
+	font-size: 14.5px;
+	font-weight: 700;
+	letter-spacing: -0.005em;
+	border-radius: 13px;
+	corner-shape: squircle;
+	padding: 13px 20px;
+	border: 1.5px solid transparent;
+	transition: background 0.18s ease, border-color 0.18s ease, transform 0.12s ease;
+}
+
+.btn:active { transform: scale(0.985); }
+
+.btn-primary {
+	flex: 1;
+	background: #1c0810;
+	color: #fff;
+}
+
+.btn-primary:hover { background: #2b0c16; }
+
+.btn-ghost {
+	background: transparent;
+	border-color: rgba(28, 8, 16, 0.4);
+	color: #1c0810;
+}
+
+.btn-ghost:hover { background: rgba(28, 8, 16, 0.1); }
+
+.skip {
+	display: block;
+	width: 100%;
+	appearance: none;
+	border: none;
+	background: none;
+	cursor: pointer;
+	font-family: inherit;
+	font-size: 12.5px;
+	font-weight: 600;
+	color: #3a1220;
+	margin-top: 14px;
+	padding: 6px;
+	transition: color 0.18s ease;
+}
+
+.skip:hover { color: #1c0810; }
+
+@keyframes ats-fade {
+	from { opacity: 0; }
+	to { opacity: 1; }
+}
+
+@keyframes ats-enter {
+	from { opacity: 0; transform: scale(0.97); }
+	to { opacity: 1; transform: none; }
+}
+
+@keyframes ats-slide {
+	from { opacity: 0; transform: translateY(7px); }
+	to { opacity: 1; transform: none; }
+}
+
+@keyframes ats-nudge {
+	0%, 100% { transform: translateY(1.5px); }
+	50% { transform: translateY(-2.5px); }
+}
+
+@keyframes ats-reticle {
+	0%, 100% { box-shadow: 0 0 0 2px rgba(255, 51, 102, 0.55), 0 0 46px rgba(255, 51, 102, 0.35); }
+	50% { box-shadow: 0 0 0 2px rgba(255, 51, 102, 0.8), 0 0 70px rgba(255, 51, 102, 0.5); }
+}
+
+@media (max-width: 560px) {
+	.title { font-size: 21px; }
+	.body, .reason { font-size: 13.5px; }
+	.actions { flex-direction: column-reverse; }
+	.arrow-hint { font-size: 10px; letter-spacing: 0.1em; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+	.backdrop, .card, .arrow, .arrow-mark, .spotlight .ring,
+	.title, .body, .url-box, .reason, .actions, .rail-fill, .btn {
+		animation: none;
+		transition: none;
+	}
+}
+`;
+
+
+/***/ }),
+
 /***/ "./node_modules/ua-parser-js/src/ua-parser.js":
 /*!****************************************************!*\
   !*** ./node_modules/ua-parser-js/src/ua-parser.js ***!
@@ -2996,4 +6244,4 @@ var __WEBPACK_AMD_DEFINE_RESULT__;//////////////////////////////////////////////
 /******/ 	
 /******/ })()
 ;
-//# sourceMappingURL=data:application/json;charset=utf-8;base64,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O0FBQ0E7QUFDQTs7QUFFQTtBQUNBO0FBQ0E7O0FBRUE7QUFDQTtBQUNBO0FBQ0EsWUFBWSxRQUFhO0FBQ3pCO0FBQ0E7QUFDQSxRQUFRLGdCQUFnQjtBQUN4QixNQUFNO0FBQ047QUFDQSxZQUFZLFVBQWMsa0JBQWtCLHdCQUFVO0FBQ3RELFlBQVksbUNBQU87QUFDbkI7QUFDQSxhQUFhO0FBQUEsa0dBQUM7QUFDZCxVQUFVO0FBQ1Y7QUFDQTtBQUNBO0FBQ0E7O0FBRUE7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTs7QUFFQSxDQUFDOzs7Ozs7O1VDdmhDRDtVQUNBOztVQUVBO1VBQ0E7VUFDQTtVQUNBO1VBQ0E7VUFDQTtVQUNBO1VBQ0E7VUFDQTtVQUNBO1VBQ0E7VUFDQTtVQUNBOztVQUVBO1VBQ0E7O1VBRUE7VUFDQTtVQUNBOzs7OztXQ3RCQSw4Qjs7Ozs7VUVBQTtVQUNBO1VBQ0E7VUFDQSIsInNvdXJjZXMiOlsid2VicGFjazovL0FUU0V2ZW50cy8uL2luZGV4LnRzIiwid2VicGFjazovL0FUU0V2ZW50cy8uL3NyYy9Ccm93c2VySW5mby50cyIsIndlYnBhY2s6Ly9BVFNFdmVudHMvLi9zcmMvQ2FtcGFpZ25JbmZvLnRzIiwid2VicGFjazovL0FUU0V2ZW50cy8uL3NyYy9FdmVudFNlbmRlci50cyIsIndlYnBhY2s6Ly9BVFNFdmVudHMvLi9zcmMvTG9nZ2VyLnRzIiwid2VicGFjazovL0FUU0V2ZW50cy8uL3NyYy9NYW5hZ2VyLnRzIiwid2VicGFjazovL0FUU0V2ZW50cy8uL3NyYy9SZW1vdGUudHMiLCJ3ZWJwYWNrOi8vQVRTRXZlbnRzLy4vc3JjL1Rvb2xzLnRzIiwid2VicGFjazovL0FUU0V2ZW50cy8uL3NyYy9VcmxQYXJzZXIudHMiLCJ3ZWJwYWNrOi8vQVRTRXZlbnRzLy4vc3JjL2V2ZW50cy9BVFNFdmVudC50cyIsIndlYnBhY2s6Ly9BVFNFdmVudHMvLi9zcmMvZXZlbnRzL0F0dGFjaG1lbnRPcGVuLnRzIiwid2VicGFjazovL0FUU0V2ZW50cy8uL3NyYy9ldmVudHMvQ2xpY2sudHMiLCJ3ZWJwYWNrOi8vQVRTRXZlbnRzLy4vc3JjL2V2ZW50cy9DbGlwYm9hcmQudHMiLCJ3ZWJwYWNrOi8vQVRTRXZlbnRzLy4vc3JjL2V2ZW50cy9Eb3dubG9hZC50cyIsIndlYnBhY2s6Ly9BVFNFdmVudHMvLi9zcmMvZXZlbnRzL0V4dGVuc2lvbi50cyIsIndlYnBhY2s6Ly9BVFNFdmVudHMvLi9zcmMvZXZlbnRzL0ZpbGVEb3dubG9hZC50cyIsIndlYnBhY2s6Ly9BVFNFdmVudHMvLi9zcmMvZXZlbnRzL0ZpbGVPcGVuLnRzIiwid2VicGFjazovL0FUU0V2ZW50cy8uL3NyYy9ldmVudHMvSW5wdXQudHMiLCJ3ZWJwYWNrOi8vQVRTRXZlbnRzLy4vc3JjL2V2ZW50cy9Mb2NhdGlvbi50cyIsIndlYnBhY2s6Ly9BVFNFdmVudHMvLi9zcmMvZXZlbnRzL01pY3JvcGhvbmUudHMiLCJ3ZWJwYWNrOi8vQVRTRXZlbnRzLy4vc3JjL2V2ZW50cy9Ob3RpZmljYXRpb24udHMiLCJ3ZWJwYWNrOi8vQVRTRXZlbnRzLy4vc3JjL2V2ZW50cy9QYWdlTGVmdC50cyIsIndlYnBhY2s6Ly9BVFNFdmVudHMvLi9zcmMvZXZlbnRzL1BhZ2VMb2FkZWQudHMiLCJ3ZWJwYWNrOi8vQVRTRXZlbnRzLy4vc3JjL2V2ZW50cy9QYWdlUmVhZC50cyIsIndlYnBhY2s6Ly9BVFNFdmVudHMvLi9zcmMvZXZlbnRzL1N1Ym1pdC50cyIsIndlYnBhY2s6Ly9BVFNFdmVudHMvLi9zcmMvZXZlbnRzL1dlYmNhbS50cyIsIndlYnBhY2s6Ly9BVFNFdmVudHMvLi9ub2RlX21vZHVsZXMvdWEtcGFyc2VyLWpzL3NyYy91YS1wYXJzZXIuanMiLCJ3ZWJwYWNrOi8vQVRTRXZlbnRzL3dlYnBhY2svYm9vdHN0cmFwIiwid2VicGFjazovL0FUU0V2ZW50cy93ZWJwYWNrL3J1bnRpbWUvYW1kIG9wdGlvbnMiLCJ3ZWJwYWNrOi8vQVRTRXZlbnRzL3dlYnBhY2svYmVmb3JlLXN0YXJ0dXAiLCJ3ZWJwYWNrOi8vQVRTRXZlbnRzL3dlYnBhY2svc3RhcnR1cCIsIndlYnBhY2s6Ly9BVFNFdmVudHMvd2VicGFjay9hZnRlci1zdGFydHVwIl0sInNvdXJjZXNDb250ZW50IjpbImltcG9ydCB7IE1hbmFnZXIgfSBmcm9tIFwiLi9zcmMvTWFuYWdlclwiO1xuaW1wb3J0IFJlbW90ZSBmcm9tIFwiLi9zcmMvUmVtb3RlXCI7XG5pbXBvcnQge3JlbW92ZVN1YmRvbWFpbn0gZnJvbSBcIi4vc3JjL1Rvb2xzXCI7XG5pbXBvcnQgSU9wdGlvbnMgZnJvbSBcIi4vc3JjL2ludGVmYWNlcy9JT3B0aW9uXCI7XG5cbmNvbnN0IGRlZmF1bHRPcHRpb25zOiBJT3B0aW9ucyA9IHtcblx0ZXZlbnRzVG9JbmNsdWRlOiBbXSxcblx0ZXZlbnRzVG9FeGNsdWRlOiBbXSxcblx0ZGVidWc6IGZhbHNlLFxuXHRzaG91bGRSZWRpcmVjdDogdHJ1ZSxcblx0cmVkaXJlY3RVcmw6IGBodHRwczovL29vcHMuJHtyZW1vdmVTdWJkb21haW4od2luZG93LmxvY2F0aW9uLmhvc3RuYW1lKX1gLFxuXHRzb3VyY2U6IFwiTFBcIixcblx0dXJsOiBcImh0dHBzOi8vYXBpLmF0dGFja3NpbXVsYXRvci5jb20vdjAvY2xpZW50LWV2ZW50c1wiLFxuXHRleHRyYVBheWxvYWQ6IHt9LFxufTtcblxuY2xhc3MgQVRTRXZlbnRzIHtcblx0cHJpdmF0ZSBtYW5hZ2VyOiBNYW5hZ2VyO1xuXG5cdGNvbnN0cnVjdG9yKG9wdGlvbnM6IElPcHRpb25zKSB7XG5cdFx0Y29uc3QgX29wdGlvbnMgPSB7Li4uZGVmYXVsdE9wdGlvbnMsIC4uLm9wdGlvbnN9O1xuXHRcdGlmIChfb3B0aW9ucy5kZWJ1Zykge1xuXHRcdFx0Y29uc29sZS5sb2coX29wdGlvbnMpO1xuXHRcdH1cblx0XHRjb25zdCByZW1vdGUgPSBuZXcgUmVtb3RlKF9vcHRpb25zLmFwaUtleSwgX29wdGlvbnMudXJsLCBfb3B0aW9ucy5kZWJ1Zyk7XG5cdFx0dGhpcy5tYW5hZ2VyID0gbmV3IE1hbmFnZXIocmVtb3RlLCBfb3B0aW9ucyk7XG5cdH1cblxuXHRsaXN0ZW4oKSB7XG5cdFx0dGhpcy5tYW5hZ2VyLmxpc3RlbigpO1xuXHR9XG5cblx0b24oZXZlbnROYW1lOiBzdHJpbmcsIGNhbGxiYWNrKSB7XG5cdFx0dGhpcy5tYW5hZ2VyLnN1YnNjcmliZShldmVudE5hbWUsIGNhbGxiYWNrKTtcblx0fVxuXG5cdG9mZihldmVudE5hbWU6IHN0cmluZywgY2FsbGJhY2spIHtcblx0XHR0aGlzLm1hbmFnZXIudW5zdWJzY3JpYmUoZXZlbnROYW1lLCBjYWxsYmFjayk7XG5cdH1cblxuXHRzdG9wKCkge1xuXHRcdHRoaXMubWFuYWdlci5zdG9wKCk7XG5cdH1cblxuXHR0cmlnZ2VyKG5hbWU6IHN0cmluZyk6IFByb21pc2U8dm9pZD4ge1xuXHRcdHJldHVybiB0aGlzLm1hbmFnZXIudHJpZ2dlcihuYW1lKTtcblx0fVxufVxuXG5tb2R1bGUuZXhwb3J0cyA9IEFUU0V2ZW50cztcbiIsImltcG9ydCBwYXJzZXIgZnJvbSBcInVhLXBhcnNlci1qc1wiO1xuXG5jb25zdCBJUF9JTkZPX1VSTCA9IFwiaHR0cHM6Ly9pcGluZm8uaW8vaXBcIjtcbmNvbnN0IElQX0xPT0tVUF9USU1FT1VUID0gMTUwMDtcblxuaW50ZXJmYWNlIFNjcmVlblNpemUge1xuICAgIHdpZHRoID86IG51bWJlclxuICAgIGhlaWdodCA/OiBudW1iZXJcbn1cblxuaW50ZXJmYWNlIEJyb3dzZXIge1xuICAgIG5hbWUgPzogc3RyaW5nXG4gICAgdmVyc2lvbiA/OiBzdHJpbmdcbiAgICBtYWpvcl92ZXJzaW9uID86IG51bWJlclxuICAgIG1vYmlsZSA/OiBib29sZWFuXG59XG5cbmludGVyZmFjZSBPUyB7XG4gICAgbmFtZSA/OiBzdHJpbmdcbiAgICB2ZXJzaW9uID86IHN0cmluZ1xufVxuXG5pbnRlcmZhY2UgRGV2aWNlIHtcbiAgICBtb2RlbD86IHN0cmluZ1xuICAgIHR5cGU/OiBzdHJpbmdcbiAgICB2ZW5kb3I/OiBzdHJpbmdcbn1cbmludGVyZmFjZSBDcHUge1xuICAgIGFyY2hpdGVjdHVyZSA/OnN0cmluZ1xufVxuXG5leHBvcnQgaW50ZXJmYWNlIEJyb3dzZXJJbmZvIHtcbiAgICBpcD86IHN0cmluZztcbiAgICB1c2VyYWdlbnQ6IHN0cmluZztcbiAgICBzY3JlZW5fc2l6ZTogU2NyZWVuU2l6ZTtcbiAgICBicm93c2VyOiBCcm93c2VyO1xuICAgIG9zOiBPUztcbiAgICBkZXZpY2U6IERldmljZTtcbiAgICBjcHU6IENwdTtcbn1cblxuZnVuY3Rpb24gZmluZEJyb3dzZXIoKTogQnJvd3NlciB7XG5cdGxldCB2ZXJPZmZzZXQ6IG51bWJlcjtcblx0Y29uc3QgYnJvd3NlcjogQnJvd3NlciA9IHt9O1xuXHRjb25zdCB1c2VyQWdlbnQgPSBuYXZpZ2F0b3IudXNlckFnZW50O1xuXG5cdC8vIE9wZXJhXG5cdGlmICgodmVyT2Zmc2V0ID0gdXNlckFnZW50LmluZGV4T2YoXCJPcGVyYVwiKSkgIT09IC0xKSB7XG5cdFx0YnJvd3Nlci5uYW1lID0gXCJPcGVyYVwiO1xuXHRcdGJyb3dzZXIudmVyc2lvbiA9IHVzZXJBZ2VudC5zdWJzdHJpbmcodmVyT2Zmc2V0ICsgNik7XG5cdFx0aWYgKCh2ZXJPZmZzZXQgPSB1c2VyQWdlbnQuaW5kZXhPZihcIlZlcnNpb25cIikpICE9PSAtMSkge1xuXHRcdFx0YnJvd3Nlci52ZXJzaW9uID0gdXNlckFnZW50LnN1YnN0cmluZyh2ZXJPZmZzZXQgKyA4KTtcblx0XHR9XG5cdH1cblxuXHQvLyBPcGVyYSBOZXh0XG5cdGVsc2UgaWYgKCh2ZXJPZmZzZXQgPSB1c2VyQWdlbnQuaW5kZXhPZihcIk9QUlwiKSkgIT09IC0xKSB7XG5cdFx0YnJvd3Nlci5uYW1lID0gXCJPcGVyYVwiO1xuXHRcdGJyb3dzZXIudmVyc2lvbiA9IHVzZXJBZ2VudC5zdWJzdHJpbmcodmVyT2Zmc2V0ICsgNSk7XG5cdH1cblxuXHQvLyBFZGdlXG5cdGVsc2UgaWYgKCh2ZXJPZmZzZXQgPSB1c2VyQWdlbnQuaW5kZXhPZihcIkVkZ2VcIikpICE9PSAtMSkge1xuXHRcdGJyb3dzZXIubmFtZSA9IFwiTWljcm9zb2Z0IEVkZ2VcIjtcblx0XHRicm93c2VyLnZlcnNpb24gPSB1c2VyQWdlbnQuc3Vic3RyaW5nKHZlck9mZnNldCArIDUpO1xuXHR9XG5cblx0Ly8gTVNJRVxuXHRlbHNlIGlmICgodmVyT2Zmc2V0ID0gdXNlckFnZW50LmluZGV4T2YoXCJNU0lFXCIpKSAhPT0gLTEpIHtcblx0XHRicm93c2VyLm5hbWUgPSBcIk1pY3Jvc29mdCBJbnRlcm5ldCBFeHBsb3JlclwiO1xuXHRcdGJyb3dzZXIudmVyc2lvbiA9IHVzZXJBZ2VudC5zdWJzdHJpbmcodmVyT2Zmc2V0ICsgNSk7XG5cdH1cblxuXHQvLyBDaHJvbWVcblx0ZWxzZSBpZiAoKHZlck9mZnNldCA9IHVzZXJBZ2VudC5pbmRleE9mKFwiQ2hyb21lXCIpKSAhPT0gLTEpIHtcblx0XHRicm93c2VyLm5hbWUgPSBcIkNocm9tZVwiO1xuXHRcdGJyb3dzZXIudmVyc2lvbiA9IHVzZXJBZ2VudC5zdWJzdHJpbmcodmVyT2Zmc2V0ICsgNyk7XG5cdH1cblxuXHQvLyBTYWZhcmlcblx0ZWxzZSBpZiAoKHZlck9mZnNldCA9IHVzZXJBZ2VudC5pbmRleE9mKFwiU2FmYXJpXCIpKSAhPT0gLTEpIHtcblx0XHRicm93c2VyLm5hbWUgPSBcIlNhZmFyaVwiO1xuXHRcdGJyb3dzZXIudmVyc2lvbiA9IHVzZXJBZ2VudC5zdWJzdHJpbmcodmVyT2Zmc2V0ICsgNyk7XG5cdFx0aWYgKCh2ZXJPZmZzZXQgPSB1c2VyQWdlbnQuaW5kZXhPZihcIlZlcnNpb25cIikpICE9PSAtMSkge1xuXHRcdFx0YnJvd3Nlci52ZXJzaW9uID0gdXNlckFnZW50LnN1YnN0cmluZyh2ZXJPZmZzZXQgKyA4KTtcblx0XHR9XG5cdH1cblxuXHQvLyBGaXJlZm94XG5cdGVsc2UgaWYgKCh2ZXJPZmZzZXQgPSB1c2VyQWdlbnQuaW5kZXhPZihcIkZpcmVmb3hcIikpICE9PSAtMSkge1xuXHRcdGJyb3dzZXIubmFtZSA9IFwiRmlyZWZveFwiO1xuXHRcdGJyb3dzZXIudmVyc2lvbiA9IHVzZXJBZ2VudC5zdWJzdHJpbmcodmVyT2Zmc2V0ICsgOCk7XG5cdH1cblxuXHQvLyBNU0lFIDExK1xuXHRlbHNlIGlmICh1c2VyQWdlbnQuaW5kZXhPZihcIlRyaWRlbnQvXCIpICE9PSAtMSkge1xuXHRcdGJyb3dzZXIubmFtZSA9IFwiTWljcm9zb2Z0IEludGVybmV0IEV4cGxvcmVyXCI7XG5cdFx0YnJvd3Nlci52ZXJzaW9uID0gdXNlckFnZW50LnN1YnN0cmluZyh1c2VyQWdlbnQuaW5kZXhPZihcInJ2OlwiKSArIDMpO1xuXHR9XG5cblx0YnJvd3Nlci5tb2JpbGUgPSAvTW9iaWxlfG1pbml8RmVubmVjfEFuZHJvaWR8aVAoYWR8b2R8aG9uZSkvLnRlc3QodXNlckFnZW50KTtcblx0YnJvd3Nlci52ZXJzaW9uID0gYnJvd3Nlci52ZXJzaW9uIHx8IFwiXCI7XG5cblx0Ly8gdHJpbSB0aGUgdmVyc2lvbiBzdHJpbmdcblx0bGV0IGl4O1xuXHRpZiAoKGl4ID0gYnJvd3Nlci52ZXJzaW9uLmluZGV4T2YoXCI7XCIpKSAhPSAtMSkgYnJvd3Nlci52ZXJzaW9uID0gYnJvd3Nlci52ZXJzaW9uLnN1YnN0cmluZygwLCBpeCk7XG5cdGlmICgoaXggPSBicm93c2VyLnZlcnNpb24uaW5kZXhPZihcIiBcIikpICE9IC0xKSBicm93c2VyLnZlcnNpb24gPSBicm93c2VyLnZlcnNpb24uc3Vic3RyaW5nKDAsIGl4KTtcblx0aWYgKChpeCA9IGJyb3dzZXIudmVyc2lvbi5pbmRleE9mKFwiKVwiKSkgIT0gLTEpIGJyb3dzZXIudmVyc2lvbiA9IGJyb3dzZXIudmVyc2lvbi5zdWJzdHJpbmcoMCwgaXgpO1xuXG5cdGJyb3dzZXIubWFqb3JfdmVyc2lvbiA9IHBhcnNlSW50KFwiXCIgKyBicm93c2VyLnZlcnNpb24sIDEwKTtcblx0aWYgKGlzTmFOKCBicm93c2VyLm1ham9yX3ZlcnNpb24pKSB7XG5cdFx0YnJvd3Nlci52ZXJzaW9uID0gXCJcIiArIHBhcnNlRmxvYXQobmF2aWdhdG9yLmFwcFZlcnNpb24pO1xuXHRcdGJyb3dzZXIubWFqb3JfdmVyc2lvbiA9IHBhcnNlSW50KG5hdmlnYXRvci5hcHBWZXJzaW9uLCAxMCk7XG5cdH1cbiAgICBcblx0cmV0dXJuIGJyb3dzZXI7XG59XG5cbmZ1bmN0aW9uIGZpbmRPcGVyYXRpbmdTeXN0ZW0ocGFyc2VyOiBhbnkpOiBPUyB7XG5cdGNvbnN0IHtuYW1lLCB2ZXJzaW9ufSA9IHBhcnNlci5nZXRPUygpO1xuXHRyZXR1cm4geyBuYW1lLCB2ZXJzaW9ufTtcbn1cblxuZnVuY3Rpb24gZmluZERldmljZShwYXJzZXI6IGFueSk6IERldmljZSB7XG5cdGNvbnN0IHttb2RlbCwgdHlwZSwgdmVuZG9yfSA9IHBhcnNlci5nZXREZXZpY2UoKTtcblx0cmV0dXJuIHttb2RlbCwgdHlwZSwgdmVuZG9yfTtcbn1cblxuZnVuY3Rpb24gZmluZENwdShwYXJzZXI6IGFueSk6IENwdSB7XG5cdGNvbnN0IHthcmNoaXRlY3R1cmV9ID0gcGFyc2VyLmdldENQVSgpO1xuXHRyZXR1cm4ge2FyY2hpdGVjdHVyZX07XG59XG5cbmFzeW5jIGZ1bmN0aW9uIGZpbmRDbGllbnRJcCgpOiBQcm9taXNlPHN0cmluZyB8IHVuZGVmaW5lZD4ge1xuXHR0cnkge1xuXHRcdGNvbnN0IGNvbnRyb2xsZXIgPSBuZXcgQWJvcnRDb250cm9sbGVyKCk7XG5cdFx0Y29uc3QgdGltZW91dCA9IHdpbmRvdy5zZXRUaW1lb3V0KCgpID0+IGNvbnRyb2xsZXIuYWJvcnQoKSwgSVBfTE9PS1VQX1RJTUVPVVQpO1xuXG5cdFx0dHJ5IHtcblx0XHRcdGNvbnN0IHJlc3BvbnNlID0gYXdhaXQgZmV0Y2goSVBfSU5GT19VUkwsIHtcblx0XHRcdFx0cmVmZXJyZXJQb2xpY3k6IFwibm8tcmVmZXJyZXJcIixcblx0XHRcdFx0c2lnbmFsOiBjb250cm9sbGVyLnNpZ25hbFxuXHRcdFx0fSk7XG5cdFx0XHRpZiAoIXJlc3BvbnNlLm9rKSB7XG5cdFx0XHRcdHJldHVybiB1bmRlZmluZWQ7XG5cdFx0XHR9XG5cblx0XHRcdGNvbnN0IGlwID0gYXdhaXQgcmVzcG9uc2UudGV4dCgpO1xuXHRcdFx0cmV0dXJuIGlwLnRyaW0oKSB8fCB1bmRlZmluZWQ7XG5cdFx0fSBmaW5hbGx5IHtcblx0XHRcdHdpbmRvdy5jbGVhclRpbWVvdXQodGltZW91dCk7XG5cdFx0fVxuXHR9IGNhdGNoIHtcblx0XHRyZXR1cm4gdW5kZWZpbmVkO1xuXHR9XG59XG5cbmZ1bmN0aW9uIGZpbmRTY3JlZW5TaXplKCk6IFNjcmVlblNpemUge1xuXHRyZXR1cm4ge1xuXHRcdHdpZHRoOiBzY3JlZW4ud2lkdGggfHwgMCxcblx0XHRoZWlnaHQ6IHNjcmVlbi5oZWlnaHQgfHwgMFxuXHR9O1xufVxuXG5leHBvcnQgYXN5bmMgZnVuY3Rpb24gZmluZEJyb3dzZXJJbmZvKCk6IFByb21pc2U8QnJvd3NlckluZm8+IHtcblx0Y29uc3QgaXAgPSBhd2FpdCBmaW5kQ2xpZW50SXAoKTtcblxuXHR0cnkge1xuXHRcdGNvbnN0IHVhID0gbmV3IHBhcnNlcigpO1xuXHRcdHJldHVybiB7XG5cdFx0XHRpcCxcblx0XHRcdHVzZXJhZ2VudDogd2luZG93Lm5hdmlnYXRvci51c2VyQWdlbnQsXG5cdFx0XHRzY3JlZW5fc2l6ZTogZmluZFNjcmVlblNpemUoKSxcblx0XHRcdGJyb3dzZXI6IGZpbmRCcm93c2VyKCksXG5cdFx0XHRvczogZmluZE9wZXJhdGluZ1N5c3RlbSh1YSksXG5cdFx0XHRkZXZpY2U6IGZpbmREZXZpY2UodWEpLFxuXHRcdFx0Y3B1OiBmaW5kQ3B1KHVhKVxuXHRcdH07XG5cdH0gY2F0Y2gge1xuXHRcdHJldHVybiB7XG5cdFx0XHRpcCxcblx0XHRcdHVzZXJhZ2VudDogd2luZG93Lm5hdmlnYXRvci51c2VyQWdlbnQsXG5cdFx0XHRzY3JlZW5fc2l6ZTogZmluZFNjcmVlblNpemUoKSxcblx0XHRcdGJyb3dzZXI6IHt9LFxuXHRcdFx0b3M6IHt9LFxuXHRcdFx0ZGV2aWNlOiB7fSxcblx0XHRcdGNwdToge31cblx0XHR9O1xuXHR9XG59XG4iLCJpbXBvcnQgeyBVcmxQYXJzZXIgfSBmcm9tIFwiLi9VcmxQYXJzZXJcIjtcbmltcG9ydCBJQ2FtcGFpZ25JbmZvIGZyb20gXCIuL2ludGVmYWNlcy9JQ2FtcGFpZ25JbmZvXCI7XG5cbi8qKlxuICogUmVhZHMgYW5kIGRlY29kZXMgYSB0b2tlbiBzdHJpbmcgdG8gZXh0cmFjdCBjYW1wYWlnbiBpbmZvcm1hdGlvbi5cbiAqXG4gKiBAcGFyYW0ge3N0cmluZ30gW3Rva2VuU3RyaW5nXSAtIFRoZSB0b2tlbiBzdHJpbmcgdG8gYmUgZGVjb2RlZC5cbiAqIEBwYXJhbSB7c3RyaW5nfSBbZmlsZVR5cGVdIC0gVGhlIHR5cGUgb2YgZmlsZSBhc3NvY2lhdGVkIHdpdGggdGhlIGNhbXBhaWduLlxuICogQHJldHVybnMge0lDYW1wYWlnbkluZm99IC0gVGhlIGRlY29kZWQgY2FtcGFpZ24gaW5mb3JtYXRpb24uXG4gKi9cbmZ1bmN0aW9uIHJlYWRUb2tlblN0cmluZyh0b2tlblN0cmluZyA/OiBzdHJpbmcsIGZpbGVUeXBlID86IHN0cmluZyk6IElDYW1wYWlnbkluZm8ge1xuXHRjb25zdCBiYXNlNjRVcmwgPSB0b2tlblN0cmluZy5zcGxpdChcIi5cIilbMV07XG5cdGNvbnN0IGJhc2U2NCA9ICBiYXNlNjRVcmwucmVwbGFjZSgvLS9nLCBcIitcIikucmVwbGFjZSgvXy9nLCBcIi9cIik7XG5cdGNvbnN0IGNhbXBhaWduSW5mbyA9IEpTT04ucGFyc2Uod2luZG93LmF0b2IoYmFzZTY0KSkucGF5bG9hZCBhcyBJQ2FtcGFpZ25JbmZvO1xuXG5cdGlmIChmaWxlVHlwZSA9PT0gXCJhdHRhY2htZW50XCIpIHtcblx0XHRjYW1wYWlnbkluZm8uZG93bmxvYWRfdHlwZSA9IFwiYXR0YWNobWVudFwiO1xuXHR9IGVsc2UgaWYgKGZpbGVUeXBlICE9PSBudWxsKSB7XG5cdFx0Y2FtcGFpZ25JbmZvLmRvd25sb2FkX3R5cGUgPSBcImZpbGVcIjtcblx0fVxuXG5cdHJldHVybiBjYW1wYWlnbkluZm87XG59XG5cbi8qKlxuICogRmluZHMgYW5kIHJldHVybnMgdGhlIGNhbXBhaWduIGluZm9ybWF0aW9uIGZyb20gdGhlIFVSTC5cbiAqXG4gKiBAcmV0dXJucyB7W3N0cmluZywgSUNhbXBhaWduSW5mb119IC0gQSB0dXBsZSBjb250YWluaW5nIHRoZSB0b2tlbiBzdHJpbmcgYW5kIHRoZSBkZWNvZGVkIGNhbXBhaWduIGluZm9ybWF0aW9uLlxuICogQHRocm93cyB7RXJyb3J9IC0gVGhyb3dzIGFuIGVycm9yIGlmIHRoZSBBVFRBQ0sgU2ltdWxhdG9yIHRva2VuIGlzIG1pc3NpbmcuXG4gKi9cbmV4cG9ydCBmdW5jdGlvbiBmaW5kQ2FtcGFpZ25JbmZvKCkgOiBbc3RyaW5nLCBJQ2FtcGFpZ25JbmZvXSB7XG5cdGNvbnN0IHVybCA9IG5ldyBVcmxQYXJzZXIod2luZG93LmxvY2F0aW9uLmhyZWYpO1xuXHRjb25zdCB0b2tlblN0cmluZyA9IHVybC5maW5kUGFyYW0oXCJ0a1wiKTtcblx0aWYgKCF0b2tlblN0cmluZykge1xuXHRcdHRocm93IG5ldyBFcnJvcihcIk1pc3NpbmcgQVRUQUNLIFNpbXVsYXRvciB0b2tlblwiKTtcblx0fVxuXHRjb25zdCBmaWxlVHlwZSA9IHVybC5maW5kUGFyYW0oXCJmaWxlX3R5cGVcIik7XG5cblx0dHJ5IHtcblx0XHRyZXR1cm4gW3Rva2VuU3RyaW5nLCByZWFkVG9rZW5TdHJpbmcodG9rZW5TdHJpbmcsIGZpbGVUeXBlKV07XG5cdH0gY2F0Y2goZSkge1xuXHRcdHJldHVybiBbdG9rZW5TdHJpbmcsIHsgYXRzX2NvbXBhbnlfaWQ6IFwiXCIgfV07XG5cdH1cbn1cbiIsImltcG9ydCBMb2dnZXIgZnJvbSBcIi4vTG9nZ2VyXCI7XG5pbXBvcnQgUmVtb3RlLCB7IFJlbW90ZVJlc3BvbnNlIH0gZnJvbSBcIi4vUmVtb3RlXCI7XG5pbXBvcnQgeyBjcmVhdGVVVUlEIH0gZnJvbSBcIi4vVG9vbHNcIjtcbmltcG9ydCBJRXZlbnRQYXlsb2FkLCB7IElFdmVudFBheWxvYWREcmFmdCB9IGZyb20gXCIuL2ludGVmYWNlcy9JRXZlbnRQYXlsb2FkXCI7XG5cbnR5cGUgUXVldWVTdGF0dXMgPSBcInBlbmRpbmdcIiB8IFwic2VuZGluZ1wiIHwgXCJzZW50XCIgfCBcImZhaWxlZFwiO1xuXG50eXBlIFF1ZXVlSXRlbSA9IHtcblx0cGF5bG9hZDogSUV2ZW50UGF5bG9hZDtcblx0c3RhdHVzOiBRdWV1ZVN0YXR1cztcblx0YXR0ZW1wdHM6IG51bWJlcjtcblx0Y3JlYXRlZEF0OiBudW1iZXI7XG5cdHVwZGF0ZWRBdDogbnVtYmVyO1xuXHRyZXNwb25zZT86IFJlbW90ZVJlc3BvbnNlO1xuXHRlcnJvcj86IHVua25vd247XG59O1xuXG50eXBlIFNlbmRPcHRpb25zID0ge1xuXHRtYXhBdHRlbXB0cz86IG51bWJlcjtcblx0dGltZW91dE1zPzogbnVtYmVyO1xufTtcblxuY29uc3QgTUFYX0FUVEVNUFRTID0gMztcbmNvbnN0IFJFVFJZX0RFTEFZU19NUyA9IFs1MDAsIDE1MDBdO1xuY29uc3QgUkVUUllfSklUVEVSX01TID0gMTAwO1xuY29uc3QgUkVRVUVTVF9USU1FT1VUX01TID0gNTAwMDtcblxuZXhwb3J0IGRlZmF1bHQgY2xhc3MgRXZlbnRTZW5kZXIge1xuXHRwcml2YXRlIHBlbmRpbmc6IFF1ZXVlSXRlbVtdID0gW107XG5cdHByaXZhdGUgc2VuZGluZzogUXVldWVJdGVtW10gPSBbXTtcblx0cHJpdmF0ZSBzZW50OiBRdWV1ZUl0ZW1bXSA9IFtdO1xuXHRwcml2YXRlIGZhaWxlZDogUXVldWVJdGVtW10gPSBbXTtcblxuXHRjb25zdHJ1Y3Rvcihwcml2YXRlIHJlbW90ZTogUmVtb3RlLCBwcml2YXRlIGxvZ2dlcjogTG9nZ2VyKSB7fVxuXG5cdHB1YmxpYyBhc3luYyBzZW5kKHBheWxvYWREcmFmdDogSUV2ZW50UGF5bG9hZERyYWZ0LCBvcHRpb25zOiBTZW5kT3B0aW9ucyA9IHt9KTogUHJvbWlzZTxSZW1vdGVSZXNwb25zZSB8IG51bGw+IHtcblx0XHRjb25zdCBpdGVtID0gdGhpcy5lbnF1ZXVlKHBheWxvYWREcmFmdCk7XG5cdFx0cmV0dXJuIHRoaXMuc2VuZEl0ZW0oaXRlbSwgb3B0aW9ucyk7XG5cdH1cblxuXHRwcml2YXRlIGVucXVldWUocGF5bG9hZERyYWZ0OiBJRXZlbnRQYXlsb2FkRHJhZnQpOiBRdWV1ZUl0ZW0ge1xuXHRcdGNvbnN0IG5vdyA9IERhdGUubm93KCk7XG5cdFx0Y29uc3QgaXRlbTogUXVldWVJdGVtID0ge1xuXHRcdFx0cGF5bG9hZDoge1xuXHRcdFx0XHQuLi5wYXlsb2FkRHJhZnQsXG5cdFx0XHRcdHNnX2V2ZW50X2lkOiBwYXlsb2FkRHJhZnQuc2dfZXZlbnRfaWQgfHwgY3JlYXRlVVVJRCgpLFxuXHRcdFx0fSxcblx0XHRcdHN0YXR1czogXCJwZW5kaW5nXCIsXG5cdFx0XHRhdHRlbXB0czogMCxcblx0XHRcdGNyZWF0ZWRBdDogbm93LFxuXHRcdFx0dXBkYXRlZEF0OiBub3csXG5cdFx0fTtcblxuXHRcdHRoaXMucGVuZGluZy5wdXNoKGl0ZW0pO1xuXHRcdHJldHVybiBpdGVtO1xuXHR9XG5cblx0cHJpdmF0ZSBhc3luYyBzZW5kSXRlbShpdGVtOiBRdWV1ZUl0ZW0sIG9wdGlvbnM6IFNlbmRPcHRpb25zKTogUHJvbWlzZTxSZW1vdGVSZXNwb25zZSB8IG51bGw+IHtcblx0XHRjb25zdCBtYXhBdHRlbXB0cyA9IG9wdGlvbnMubWF4QXR0ZW1wdHMgfHwgTUFYX0FUVEVNUFRTO1xuXHRcdGNvbnN0IHRpbWVvdXRNcyA9IG9wdGlvbnMudGltZW91dE1zIHx8IFJFUVVFU1RfVElNRU9VVF9NUztcblxuXHRcdHdoaWxlIChpdGVtLmF0dGVtcHRzIDwgbWF4QXR0ZW1wdHMpIHtcblx0XHRcdGlmIChpdGVtLmF0dGVtcHRzID4gMCkge1xuXHRcdFx0XHRhd2FpdCB0aGlzLndhaXQodGhpcy5yZXRyeURlbGF5KGl0ZW0uYXR0ZW1wdHMpKTtcblx0XHRcdH1cblxuXHRcdFx0dGhpcy5tb3ZlSXRlbShpdGVtLCBcInNlbmRpbmdcIik7XG5cdFx0XHRpdGVtLmF0dGVtcHRzKys7XG5cblx0XHRcdHRyeSB7XG5cdFx0XHRcdGNvbnN0IHJlc3BvbnNlID0gYXdhaXQgdGhpcy5yZW1vdGUucG9zdChpdGVtLnBheWxvYWQsIHsgdGltZW91dE1zIH0pO1xuXHRcdFx0XHRpdGVtLnJlc3BvbnNlID0gcmVzcG9uc2U7XG5cdFx0XHRcdGl0ZW0uZXJyb3IgPSB1bmRlZmluZWQ7XG5cblx0XHRcdFx0aWYgKHJlc3BvbnNlLm9rKSB7XG5cdFx0XHRcdFx0dGhpcy5tb3ZlSXRlbShpdGVtLCBcInNlbnRcIik7XG5cdFx0XHRcdFx0cmV0dXJuIHJlc3BvbnNlO1xuXHRcdFx0XHR9XG5cblx0XHRcdFx0aWYgKCF0aGlzLnNob3VsZFJldHJ5U3RhdHVzKHJlc3BvbnNlLnN0YXR1cykgfHwgaXRlbS5hdHRlbXB0cyA+PSBtYXhBdHRlbXB0cykge1xuXHRcdFx0XHRcdHRoaXMuZmFpbEl0ZW0oaXRlbSk7XG5cdFx0XHRcdFx0cmV0dXJuIG51bGw7XG5cdFx0XHRcdH1cblxuXHRcdFx0XHR0aGlzLmxvZ2dlci53YXJuKGBSZXRyeWluZyBldmVudCAke2l0ZW0ucGF5bG9hZC5zZ19ldmVudF9pZH0gYWZ0ZXIgSFRUUCAke3Jlc3BvbnNlLnN0YXR1c30uYCk7XG5cdFx0XHRcdHRoaXMubW92ZUl0ZW0oaXRlbSwgXCJwZW5kaW5nXCIpO1xuXHRcdFx0fSBjYXRjaCAoZXJyb3IpIHtcblx0XHRcdFx0aXRlbS5lcnJvciA9IGVycm9yO1xuXHRcdFx0XHRpdGVtLnJlc3BvbnNlID0gdW5kZWZpbmVkO1xuXG5cdFx0XHRcdGlmIChpdGVtLmF0dGVtcHRzID49IG1heEF0dGVtcHRzKSB7XG5cdFx0XHRcdFx0dGhpcy5mYWlsSXRlbShpdGVtKTtcblx0XHRcdFx0XHRyZXR1cm4gbnVsbDtcblx0XHRcdFx0fVxuXG5cdFx0XHRcdHRoaXMubG9nZ2VyLndhcm4oYFJldHJ5aW5nIGV2ZW50ICR7aXRlbS5wYXlsb2FkLnNnX2V2ZW50X2lkfSBhZnRlciBhIG5ldHdvcmsgZXJyb3IuYCk7XG5cdFx0XHRcdHRoaXMubW92ZUl0ZW0oaXRlbSwgXCJwZW5kaW5nXCIpO1xuXHRcdFx0fVxuXHRcdH1cblxuXHRcdHRoaXMuZmFpbEl0ZW0oaXRlbSk7XG5cdFx0cmV0dXJuIG51bGw7XG5cdH1cblxuXHRwcml2YXRlIHNob3VsZFJldHJ5U3RhdHVzKHN0YXR1czogbnVtYmVyKTogYm9vbGVhbiB7XG5cdFx0cmV0dXJuIHN0YXR1cyA9PT0gNDA4IHx8IHN0YXR1cyA9PT0gNDI5IHx8IHN0YXR1cyA+PSA1MDA7XG5cdH1cblxuXHRwcml2YXRlIHJldHJ5RGVsYXkoYXR0ZW1wdHNDb21wbGV0ZWQ6IG51bWJlcik6IG51bWJlciB7XG5cdFx0Y29uc3QgZGVsYXkgPSBSRVRSWV9ERUxBWVNfTVNbYXR0ZW1wdHNDb21wbGV0ZWQgLSAxXSB8fCBSRVRSWV9ERUxBWVNfTVNbUkVUUllfREVMQVlTX01TLmxlbmd0aCAtIDFdO1xuXHRcdGNvbnN0IGppdHRlciA9IE1hdGguZmxvb3IoTWF0aC5yYW5kb20oKSAqIFJFVFJZX0pJVFRFUl9NUyk7XG5cdFx0cmV0dXJuIGRlbGF5ICsgaml0dGVyO1xuXHR9XG5cblx0cHJpdmF0ZSB3YWl0KGRlbGF5OiBudW1iZXIpOiBQcm9taXNlPHZvaWQ+IHtcblx0XHRyZXR1cm4gbmV3IFByb21pc2UocmVzb2x2ZSA9PiB3aW5kb3cuc2V0VGltZW91dChyZXNvbHZlLCBkZWxheSkpO1xuXHR9XG5cblx0cHJpdmF0ZSBtb3ZlSXRlbShpdGVtOiBRdWV1ZUl0ZW0sIHN0YXR1czogUXVldWVTdGF0dXMpOiB2b2lkIHtcblx0XHR0aGlzLnJlbW92ZUl0ZW0oaXRlbSk7XG5cdFx0aXRlbS5zdGF0dXMgPSBzdGF0dXM7XG5cdFx0aXRlbS51cGRhdGVkQXQgPSBEYXRlLm5vdygpO1xuXHRcdHRoaXNbc3RhdHVzXS5wdXNoKGl0ZW0pO1xuXHR9XG5cblx0cHJpdmF0ZSByZW1vdmVJdGVtKGl0ZW06IFF1ZXVlSXRlbSk6IHZvaWQge1xuXHRcdHRoaXMucGVuZGluZyA9IHRoaXMucGVuZGluZy5maWx0ZXIocXVldWVJdGVtID0+IHF1ZXVlSXRlbSAhPT0gaXRlbSk7XG5cdFx0dGhpcy5zZW5kaW5nID0gdGhpcy5zZW5kaW5nLmZpbHRlcihxdWV1ZUl0ZW0gPT4gcXVldWVJdGVtICE9PSBpdGVtKTtcblx0XHR0aGlzLnNlbnQgPSB0aGlzLnNlbnQuZmlsdGVyKHF1ZXVlSXRlbSA9PiBxdWV1ZUl0ZW0gIT09IGl0ZW0pO1xuXHRcdHRoaXMuZmFpbGVkID0gdGhpcy5mYWlsZWQuZmlsdGVyKHF1ZXVlSXRlbSA9PiBxdWV1ZUl0ZW0gIT09IGl0ZW0pO1xuXHR9XG5cblx0cHJpdmF0ZSBmYWlsSXRlbShpdGVtOiBRdWV1ZUl0ZW0pOiB2b2lkIHtcblx0XHR0aGlzLm1vdmVJdGVtKGl0ZW0sIFwiZmFpbGVkXCIpO1xuXG5cdFx0aWYgKGl0ZW0ucmVzcG9uc2UpIHtcblx0XHRcdHRoaXMubG9nZ2VyLmVycm9yKHtcblx0XHRcdFx0bWVzc2FnZTogYEZhaWxlZCB0byBzZW5kIGV2ZW50ICR7aXRlbS5wYXlsb2FkLnNnX2V2ZW50X2lkfSBhZnRlciAke2l0ZW0uYXR0ZW1wdHN9IGF0dGVtcHRzLmAsXG5cdFx0XHRcdHN0YXR1czogaXRlbS5yZXNwb25zZS5zdGF0dXMsXG5cdFx0XHRcdGJvZHk6IGl0ZW0ucmVzcG9uc2UuYm9keSxcblx0XHRcdH0pO1xuXHRcdFx0cmV0dXJuO1xuXHRcdH1cblxuXHRcdHRoaXMubG9nZ2VyLmVycm9yKHtcblx0XHRcdG1lc3NhZ2U6IGBGYWlsZWQgdG8gc2VuZCBldmVudCAke2l0ZW0ucGF5bG9hZC5zZ19ldmVudF9pZH0gYWZ0ZXIgJHtpdGVtLmF0dGVtcHRzfSBhdHRlbXB0cy5gLFxuXHRcdFx0ZXJyb3I6IGl0ZW0uZXJyb3IsXG5cdFx0fSk7XG5cdH1cbn1cbiIsImV4cG9ydCBkZWZhdWx0IGNsYXNzIExvZ2dlciB7XG5cdHByaXZhdGUgZGVidWc6IGJvb2xlYW47XG5cdGNvbnN0cnVjdG9yKGRlYnVnOiBib29sZWFuKSB7XG5cdFx0dGhpcy5kZWJ1ZyA9IGRlYnVnO1xuXHR9XG5cblx0cHVibGljIGluZm8obWVzc2FnZTogYW55KTogdm9pZCB7XG5cdFx0aWYgKHRoaXMuZGVidWcpIHtcblx0XHRcdGNvbnNvbGUubG9nKG1lc3NhZ2UpO1xuXHRcdH1cblx0fVxuXG5cdHB1YmxpYyBlcnJvcihtZXNzYWdlOiBhbnkpOiB2b2lkIHtcblx0XHRpZiAodGhpcy5kZWJ1Zykge1xuXHRcdFx0Y29uc29sZS5lcnJvcihtZXNzYWdlKTtcblx0XHR9XG5cdH1cblxuXHRwdWJsaWMgd2FybihtZXNzYWdlOiBhbnkpOiB2b2lkIHtcblx0XHRpZiAodGhpcy5kZWJ1Zykge1xuXHRcdFx0Y29uc29sZS53YXJuKG1lc3NhZ2UpO1xuXHRcdH1cblx0fVxufSIsImltcG9ydCB7IEJyb3dzZXJJbmZvLCBmaW5kQnJvd3NlckluZm8gfSBmcm9tIFwiLi9Ccm93c2VySW5mb1wiO1xuaW1wb3J0IHsgZmluZENhbXBhaWduSW5mbyB9IGZyb20gXCIuL0NhbXBhaWduSW5mb1wiO1xuXG5pbXBvcnQgQXR0YWNobWVudE9wZW4gZnJvbSBcIi4vZXZlbnRzL0F0dGFjaG1lbnRPcGVuXCI7XG5pbXBvcnQgQ2xpY2sgZnJvbSBcIi4vZXZlbnRzL0NsaWNrXCI7XG5pbXBvcnQgRG93bmxvYWQgZnJvbSBcIi4vZXZlbnRzL0Rvd25sb2FkXCI7XG5pbXBvcnQgRXh0ZW5zaW9uIGZyb20gXCIuL2V2ZW50cy9FeHRlbnNpb25cIjtcbmltcG9ydCBGaWxlRG93bmxvYWQgZnJvbSBcIi4vZXZlbnRzL0ZpbGVEb3dubG9hZFwiO1xuaW1wb3J0IEZpbGVPcGVuIGZyb20gXCIuL2V2ZW50cy9GaWxlT3BlblwiO1xuaW1wb3J0IElucHV0IGZyb20gXCIuL2V2ZW50cy9JbnB1dFwiO1xuaW1wb3J0IE1pY3JvcGhvbmUgZnJvbSBcIi4vZXZlbnRzL01pY3JvcGhvbmVcIjtcbmltcG9ydCBOb3RpZmljYXRpb24gZnJvbSBcIi4vZXZlbnRzL05vdGlmaWNhdGlvblwiO1xuaW1wb3J0IFBhZ2VMZWZ0IGZyb20gXCIuL2V2ZW50cy9QYWdlTGVmdFwiO1xuaW1wb3J0IFBhZ2VMb2FkZWQgZnJvbSBcIi4vZXZlbnRzL1BhZ2VMb2FkZWRcIjtcbmltcG9ydCBQYWdlUmVhZCBmcm9tIFwiLi9ldmVudHMvUGFnZVJlYWRcIjtcbmltcG9ydCBTdWJtaXQgZnJvbSBcIi4vZXZlbnRzL1N1Ym1pdFwiO1xuaW1wb3J0IFdlYmNhbSBmcm9tIFwiLi9ldmVudHMvV2ViY2FtXCI7XG5pbXBvcnQgTG9jYXRpb24gZnJvbSBcIi4vZXZlbnRzL0xvY2F0aW9uXCI7XG5pbXBvcnQgQ2xpcGJvYXJkIGZyb20gXCIuL2V2ZW50cy9DbGlwYm9hcmRcIjtcblxuaW1wb3J0IElFdmVudCBmcm9tIFwiLi9pbnRlZmFjZXMvSUV2ZW50XCI7XG5cbmltcG9ydCB7IElFdmVudFBheWxvYWREcmFmdCB9IGZyb20gXCIuL2ludGVmYWNlcy9JRXZlbnRQYXlsb2FkXCI7XG5pbXBvcnQgUmVtb3RlIGZyb20gXCIuL1JlbW90ZVwiO1xuXG5pbXBvcnQgRXZlbnRTZW5kZXIgZnJvbSBcIi4vRXZlbnRTZW5kZXJcIjtcbmltcG9ydCBMb2dnZXIgZnJvbSBcIi4vTG9nZ2VyXCI7XG5pbXBvcnQgSU9wdGlvbnMgZnJvbSBcIi4vaW50ZWZhY2VzL0lPcHRpb25cIjtcbmltcG9ydCBJQ2FtcGFpZ25JbmZvIGZyb20gXCIuL2ludGVmYWNlcy9JQ2FtcGFpZ25JbmZvXCI7XG5cbmludGVyZmFjZSBFdmVudFN1YnNjcmlwdGlvbiB7XG5cdGV2ZW50TmFtZTogc3RyaW5nO1xuXHRjYWxsYmFjazogKGV2ZW50OiBJRXZlbnQpID0+IHZvaWQ7XG59XG5cbmV4cG9ydCBjbGFzcyBNYW5hZ2VyIHtcblx0cHJpdmF0ZSByZWFkb25seSBzdXBwb3J0ZWRUeXBlcyA6IHN0cmluZ1tdID0gW1wiZW1haWxcIiwgXCJwYXNzd29yZFwiLCBcInRlbFwiLCBcInRleHRcIiwgXCJnaXZlbi1uYW1lXCIsIFwibmFtZVwiLCBcImZhbWlseS1uYW1lXCIsIFwic3RyZWV0LWFkZHJlc3NcIiwgXCJjYy1uYW1lXCIsIFwiY2MtZ2l2ZW4tbmFtZVwiLCBcImNjLWZhbWlseS1uYW1lXCIsIFwiY2MtbnVtYmVyXCIsIFwiY2MtZXhwXCIsIFwiY2MtZXhwLW1vbnRoXCIsIFwiY2MtZXhwLXllYXJcIiwgXCJjYy1jc2NcIiwgXCJjYy10eXBlXCJdO1xuXHRwcml2YXRlIHJlYWRvbmx5IHN1cHBvcnRlZEV2ZW50cyA9IHtcblx0XHRcImF0dGFjaG1lbnRfb3BlbmVkXCI6IEF0dGFjaG1lbnRPcGVuLFxuXHRcdFwiYnV0dG9uX2NsaWNrZWRcIjogQ2xpY2ssXG5cdFx0XCJkb3dubG9hZFwiOiBEb3dubG9hZCxcblx0XHRcImV4dGVuc2lvbl9pbnN0YWxsZWRcIjogRXh0ZW5zaW9uLFxuXHRcdFwiZmlsZV9kb3dubG9hZFwiOiBGaWxlRG93bmxvYWQsXHRcdFxuXHRcdFwiZmlsZV9vcGVuXCI6IEZpbGVPcGVuLFxuXHRcdFwiaW5wdXRfZmlsbGVkXCI6IElucHV0LFxuXHRcdFwicGFnZV9sZWZ0XCI6IFBhZ2VMZWZ0LFxuXHRcdFwicGFnZV9sb2FkZWRcIjogUGFnZUxvYWRlZCxcblx0XHRcInBhZ2VfcmVhZFwiOiBQYWdlUmVhZCxcblx0XHRcIm1pY19hY2NlcHRlZFwiOiBNaWNyb3Bob25lLFxuXHRcdFwibm90aWZpY2F0aW9uX2FjY2VwdGVkXCI6IE5vdGlmaWNhdGlvbixcblx0XHRcImZvcm1fc3VibWl0dGVkXCI6IFN1Ym1pdCxcblx0XHRcIndlYmNhbV9hY2NlcHRlZFwiOiBXZWJjYW0sXG5cdFx0XCJsb2NhdGlvbl9hY2NlcHRlZFwiOiBMb2NhdGlvbixcblx0XHRcImNsaXBib2FyZF9hY2NlcHRlZFwiOiBDbGlwYm9hcmQsXG5cdH07XG5cdHByaXZhdGUgcmVhZG9ubHkgYnJvd3NlckluZm9Qcm9taXNlOiBQcm9taXNlPEJyb3dzZXJJbmZvPjtcblx0cHJpdmF0ZSByZWFkb25seSBjYW1wYWlnbkluZm86IElDYW1wYWlnbkluZm87XG5cdHByaXZhdGUgcmVhZG9ubHkgcmVkaXJlY3RVcmw6IHN0cmluZztcblx0cHJpdmF0ZSByZWFkb25seSBzaG91bGRSZWRpcmVjdDogYm9vbGVhbjtcblx0cHJpdmF0ZSByZWFkb25seSBzZW5kZXI6IEV2ZW50U2VuZGVyO1xuXHRwcml2YXRlIHJlYWRvbmx5IHNvdXJjZTogc3RyaW5nO1xuXHRwcml2YXRlIHJlYWRvbmx5IHRva2VuOiBzdHJpbmc7XG5cblx0cHJpdmF0ZSBzdWJzY3JpcHRpb25zOiBFdmVudFN1YnNjcmlwdGlvbltdID0gW107XG5cblx0cHJpdmF0ZSBsb2dnZXI6IExvZ2dlcjtcblx0cHJpdmF0ZSBoYW5kbGVycyA9IFtdO1xuXHRwcml2YXRlIGRpc2FibGVkRXZlbnRzID0gW107XG5cdHByaXZhdGUgYWN0aXZlRXZlbnRzOiBJRXZlbnRbXTtcblx0cHJpdmF0ZSBleHRyYVBheWxvYWQ6IG9iamVjdCA9IHt9O1xuXG5cdGNvbnN0cnVjdG9yKHJlbW90ZTogUmVtb3RlLCB7IGV2ZW50c1RvSW5jbHVkZSA9IFtdLCBldmVudHNUb0V4Y2x1ZGUgPSBbXSwgc291cmNlLCByZWRpcmVjdFVybCwgc2hvdWxkUmVkaXJlY3QsIGV4dHJhUGF5bG9hZCwgZGVidWcgPSBmYWxzZSB9OiBJT3B0aW9ucykge1xuXHRcdHRoaXMubG9nZ2VyID0gbmV3IExvZ2dlcihkZWJ1Zyk7XG5cblx0XHR0aGlzLnNlbmRlciA9IG5ldyBFdmVudFNlbmRlcihyZW1vdGUsIHRoaXMubG9nZ2VyKTtcblx0XHRbdGhpcy50b2tlbiwgdGhpcy5jYW1wYWlnbkluZm9dID0gZmluZENhbXBhaWduSW5mbygpO1xuXHRcdHRoaXMuYnJvd3NlckluZm9Qcm9taXNlID0gZmluZEJyb3dzZXJJbmZvKCk7XG5cblx0XHR0aGlzLmFjdGl2ZUV2ZW50cyA9IHRoaXMuZGVjaWRlQWN0aXZlRXZlbnRzKGV2ZW50c1RvSW5jbHVkZSwgZXZlbnRzVG9FeGNsdWRlKTtcblx0XHR0aGlzLmxvZ2dlci5pbmZvKGBFbmFibGVkIGV2ZW50czogJHtldmVudHNUb0luY2x1ZGUuam9pbihcIiB8IFwiKX1gKTtcblxuXHRcdHRoaXMuc291cmNlID0gc291cmNlO1xuXHRcdHRoaXMucmVkaXJlY3RVcmwgPSByZWRpcmVjdFVybDtcblx0XHR0aGlzLnNob3VsZFJlZGlyZWN0ID0gc2hvdWxkUmVkaXJlY3Q7XG5cdFx0dGhpcy5leHRyYVBheWxvYWQgPSBleHRyYVBheWxvYWQ7XG5cblx0XHRpZiAodGhpcy5jYW1wYWlnbkluZm8/LmRvd25sb2FkX3R5cGUpIHtcblx0XHRcdHRoaXMuY2hlY2tEb3dubG9hZCgpLnRoZW4oKCkgPT4ge1xuXHRcdFx0XHQvL1xuXHRcdFx0fSk7XG5cdFx0fVxuXHR9XG5cblx0LyoqXG5cdCAqIERlY2lkZXMgd2hpY2ggZXZlbnRzIHNob3VsZCBiZSBhY3RpdmUgYmFzZWQgb24gdGhlIHByb3ZpZGVkIGxpc3RzIG9mIGV2ZW50cyB0byBpbmNsdWRlIGFuZCBleGNsdWRlLlxuXHQgKlxuXHQgKiBAcGFyYW0ge3N0cmluZ1tdfSBldmVudHNUb0luY2x1ZGUgLSBUaGUgbGlzdCBvZiBldmVudCBuYW1lcyB0byBpbmNsdWRlLlxuXHQgKiBAcGFyYW0ge3N0cmluZ1tdfSBldmVudHNUb0V4Y2x1ZGUgLSBUaGUgbGlzdCBvZiBldmVudCBuYW1lcyB0byBleGNsdWRlLlxuXHQgKiBAcmV0dXJucyB7SUV2ZW50W119IC0gVGhlIGxpc3Qgb2YgYWN0aXZlIGV2ZW50cy5cblx0ICovXG5cdHByaXZhdGUgZGVjaWRlQWN0aXZlRXZlbnRzKGV2ZW50c1RvSW5jbHVkZTogc3RyaW5nW10sIGV2ZW50c1RvRXhjbHVkZTogc3RyaW5nW10pOiBJRXZlbnRbXSB7XG5cdFx0aWYgKGV2ZW50c1RvSW5jbHVkZS5sZW5ndGgpIHtcblx0XHRcdHJldHVybiBldmVudHNUb0luY2x1ZGUubWFwKG5hbWUgPT4gdGhpcy5nZXRFdmVudChuYW1lKSkuZmlsdGVyKGV2ZW50ID0+IGV2ZW50ICE9PSBudWxsKTtcblx0XHR9XG5cblx0XHRjb25zdCBhY3RpdmVFdmVudHMgPSBPYmplY3Qua2V5cyh0aGlzLnN1cHBvcnRlZEV2ZW50cykubWFwKG5hbWUgPT4gdGhpcy5nZXRFdmVudChuYW1lKSkuZmlsdGVyKGV2ZW50ID0+IGV2ZW50ICE9PSBudWxsKTtcblxuXHRcdGlmIChldmVudHNUb0V4Y2x1ZGUubGVuZ3RoKSB7XG5cdFx0XHRyZXR1cm4gYWN0aXZlRXZlbnRzLmZpbHRlcihldmVudCA9PiAhZXZlbnRzVG9FeGNsdWRlLmluY2x1ZGVzKGV2ZW50Lm5hbWUpKTtcblx0XHR9XG5cblx0XHRyZXR1cm4gYWN0aXZlRXZlbnRzO1xuXHR9XG5cblx0LyoqXG5cdCAqIFJldHJpZXZlcyBhbiBldmVudCBpbnN0YW5jZSBieSBpdHMgbmFtZS5cblx0ICpcblx0ICogQHBhcmFtIHtzdHJpbmd9IG5hbWUgLSBUaGUgbmFtZSBvZiB0aGUgZXZlbnQgdG8gcmV0cmlldmUuXG5cdCAqIEByZXR1cm5zIHtJRXZlbnQgfCBudWxsfSAtIFRoZSBldmVudCBpbnN0YW5jZSBpZiBmb3VuZCwgb3RoZXJ3aXNlIG51bGwuXG5cdCAqL1xuXHRwcml2YXRlIGdldEV2ZW50KG5hbWU6IHN0cmluZykge1xuXHRcdGlmICghIHRoaXMuc3VwcG9ydGVkRXZlbnRzW25hbWVdKSB7XG5cdFx0XHRyZXR1cm4gbnVsbDtcblx0XHR9XG5cblx0XHRyZXR1cm4gbmV3ICh0aGlzLnN1cHBvcnRlZEV2ZW50c1tuYW1lXSk7XG5cdH1cblxuXHQvKipcblx0ICogQ2hlY2tzIHRoZSB0eXBlIG9mIGRvd25sb2FkIHNwZWNpZmllZCBpbiB0aGUgY2FtcGFpZ24gaW5mb3JtYXRpb24gYW5kIHRyaWdnZXJzIHRoZSBjb3JyZXNwb25kaW5nIGV2ZW50LlxuXHQgKlxuXHQgKiBAcmV0dXJucyB7UHJvbWlzZTx2b2lkPn0gLSBBIHByb21pc2UgdGhhdCByZXNvbHZlcyB3aGVuIHRoZSBhcHByb3ByaWF0ZSBldmVudCBpcyB0cmlnZ2VyZWQuXG5cdCAqL1xuXHRwcml2YXRlIGNoZWNrRG93bmxvYWQoKSB7XG5cdFx0c3dpdGNoICh0aGlzLmNhbXBhaWduSW5mby5kb3dubG9hZF90eXBlKSB7XG5cdFx0Y2FzZSBcImZpbGVcIjpcblx0XHRcdHJldHVybiB0aGlzLnRyaWdnZXIoXCJmaWxlX29wZW5lZFwiKTtcblx0XHRjYXNlIFwiYXR0YWNobWVudFwiOlxuXHRcdFx0cmV0dXJuIHRoaXMudHJpZ2dlcihcImF0dGFjaG1lbnRfb3BlbmVkXCIpO1xuXHRcdH1cblx0fVxuXG5cdC8qKlxuXHQgKiBTdGFydHMgbGlzdGVuaW5nIGZvciB0aGUgYWN0aXZlIGV2ZW50cyBhbmQgc2V0cyB1cCB0aGUgZXZlbnQgaGFuZGxlcnMuXG5cdCAqL1xuXHRwdWJsaWMgbGlzdGVuKCkge1xuXHRcdGxldCBpID0gMDtcblx0XHRmb3IoY29uc3QgYWN0aXZlRXZlbnQgb2YgdGhpcy5hY3RpdmVFdmVudHMpIHtcblx0XHRcdGlmICghIGFjdGl2ZUV2ZW50LnRyaWdnZXIpIHtcblx0XHRcdFx0dGhpcy5sb2dnZXIuaW5mbyhgVGhlIGFjdGl2ZSBldmVudCAke2FjdGl2ZUV2ZW50Lm5hbWV9IGRvZXMgbm90IGhhdmUgYSB0cmlnZ2VyLiBTa2lwcGluZy4uLmApO1xuXHRcdFx0fSBlbHNlIHtcblx0XHRcdFx0dGhpcy5sb2dnZXIuaW5mbyhgTGlzdGVuaW5nIGZvciBldmVudCBAJHthY3RpdmVFdmVudC50cmlnZ2VyfSAoJHthY3RpdmVFdmVudC5uYW1lfSlgKTtcblx0XHRcdFx0YWN0aXZlRXZlbnQuc291cmNlLmFkZEV2ZW50TGlzdGVuZXIoYWN0aXZlRXZlbnQudHJpZ2dlciwgdGhpcy5oYW5kbGVyc1tpKytdID0gKGV2ZW50OiBFdmVudCkgPT4gdGhpcy5oYW5kbGUoYWN0aXZlRXZlbnQsIGV2ZW50KSk7XG5cdFx0XHR9XG5cdFx0fVxuXHR9XG5cblx0LyoqXG5cdCAqIFN0b3BzIGxpc3RlbmluZyBmb3IgdGhlIGFjdGl2ZSBldmVudHMgYW5kIHJlbW92ZXMgdGhlIGV2ZW50IGhhbmRsZXJzLlxuXHQgKi9cblx0cHVibGljIHN0b3AoKSB7XG5cdFx0bGV0IGkgPSAwO1xuXHRcdGZvcihjb25zdCBhY3RpdmVFdmVudCBvZiB0aGlzLmFjdGl2ZUV2ZW50cykge1xuXHRcdFx0aWYgKCEgYWN0aXZlRXZlbnQudHJpZ2dlcikge1xuXHRcdFx0XHRjb250aW51ZTtcblx0XHRcdH1cblxuXHRcdFx0dGhpcy5sb2dnZXIuaW5mbyhgU3RvcHBpbmcgbGlzdGVuaW5nIGZvciBldmVudCBAJHthY3RpdmVFdmVudC50cmlnZ2VyfSAoJHthY3RpdmVFdmVudC5uYW1lfSlgKTsgICAgICAgIFxuXHRcdFx0YWN0aXZlRXZlbnQuc291cmNlLnJlbW92ZUV2ZW50TGlzdGVuZXIoYWN0aXZlRXZlbnQudHJpZ2dlciwgdGhpcy5oYW5kbGVyc1tpKytdKTtcblx0XHR9XG5cdH1cblx0LyoqXG5cdCAqIE1hbnVhbGx5IHRyaWdnZXJzIHRoZSBzcGVjaWZpZWQgZXZlbnQgYnkgaXRzIG5hbWUuXG5cdCAqXG5cdCAqIEBwYXJhbSB7c3RyaW5nfSBldmVudE5hbWUgLSBUaGUgbmFtZSBvZiB0aGUgZXZlbnQgdG8gdHJpZ2dlci5cblx0ICogQHJldHVybnMge1Byb21pc2U8dm9pZD59IC0gQSBwcm9taXNlIHRoYXQgcmVzb2x2ZXMgd2hlbiB0aGUgZXZlbnQgaXMgZXhlY3V0ZWQuXG5cdCAqIEB0aHJvd3Mge0Vycm9yfSAtIFRocm93cyBhbiBlcnJvciBpZiB0aGUgZXZlbnQgaXMgdW5zdXBwb3J0ZWQuXG5cdCAqL1xuXHRwdWJsaWMgdHJpZ2dlcihldmVudE5hbWU6IHN0cmluZyk6IFByb21pc2U8dm9pZD4ge1xuXHRcdGNvbnN0IGFjdGl2ZUV2ZW50ID0gdGhpcy5nZXRFdmVudChldmVudE5hbWUpO1xuXHRcdGlmICghYWN0aXZlRXZlbnQpIHtcblx0XHRcdHRocm93IG5ldyBFcnJvcihgVW5zdXBwb3J0ZWQgZXZlbnQgJHtldmVudE5hbWV9LiBQbGVhc2UgY2hvb3NlIG9uZSBvZiAke09iamVjdC5rZXlzKHRoaXMuc3VwcG9ydGVkRXZlbnRzKS5qb2luKFwiLCBcIil9YCk7XG5cdFx0fVxuXG5cdFx0cmV0dXJuIHRoaXMuZXhlY3V0ZUV2ZW50KGFjdGl2ZUV2ZW50LCBudWxsLCBmYWxzZSk7XG5cdH1cblxuXHQvKipcblx0ICogRmluZHMgdGhlIHR5cGUgb2YgdGhlIGlucHV0IGVsZW1lbnQgYXNzb2NpYXRlZCB3aXRoIHRoZSBhY3RpdmUgZXZlbnQuXG5cdCAqXG5cdCAqIEBwYXJhbSB7SUV2ZW50fSBhY3RpdmVFdmVudCAtIFRoZSBhY3RpdmUgZXZlbnQgdG8gZmluZCB0aGUgdHlwZSBmb3IuXG5cdCAqIEBwYXJhbSB7RXZlbnR9IFtldmVudF0gLSBUaGUgb3B0aW9uYWwgZXZlbnQgb2JqZWN0LlxuXHQgKiBAcmV0dXJucyB7c3RyaW5nIHwgbnVsbH0gLSBUaGUgdHlwZSBvZiB0aGUgaW5wdXQgZWxlbWVudCBpZiBmb3VuZCwgb3RoZXJ3aXNlIG51bGwuXG5cdCAqL1xuXHRwcml2YXRlIGZpbmRUeXBlKGFjdGl2ZUV2ZW50OiBJRXZlbnQsIGV2ZW50PzogRXZlbnQpOiBzdHJpbmcgfCBudWxsIHtcblx0XHRpZiAoIWFjdGl2ZUV2ZW50Lmhhc1R5cGVzIHx8ICFldmVudCkge1xuXHRcdFx0cmV0dXJuIG51bGw7XG5cdFx0fVxuXG5cdFx0Y29uc3QgaW5wdXRFbGVtZW50ID0gZXZlbnQudGFyZ2V0IGFzIEhUTUxJbnB1dEVsZW1lbnQ7XG5cdFx0XG5cdFx0Y29uc3QgdHlwZSA9IGlucHV0RWxlbWVudC5nZXRBdHRyaWJ1dGUoXCJhdXRvY29tcGxldGVcIikgfHwgaW5wdXRFbGVtZW50LnR5cGU7XHRcblx0XHRcblx0XHRpZiAodGhpcy5zdXBwb3J0ZWRUeXBlcy5pbmRleE9mKHR5cGUpICE9PSAtMSkge1xuXHRcdFx0cmV0dXJuIHR5cGU7XG5cdFx0fVxuXG5cdFx0cmV0dXJuIG51bGw7XG5cdH1cblxuXHQvKipcblx0ICogRmluZHMgdGhlIG5hbWUgb2YgdGhlIGFjdGl2ZSBldmVudCwgb3B0aW9uYWxseSBpbmNsdWRpbmcgdGhlIHR5cGUgaWYgYXZhaWxhYmxlLlxuXHQgKlxuXHQgKiBAcGFyYW0ge0lFdmVudH0gYWN0aXZlRXZlbnQgLSBUaGUgYWN0aXZlIGV2ZW50IHRvIGZpbmQgdGhlIG5hbWUgZm9yLlxuXHQgKiBAcGFyYW0ge0V2ZW50fSBbZXZlbnRdIC0gVGhlIG9wdGlvbmFsIGV2ZW50IG9iamVjdC5cblx0ICogQHJldHVybnMge3N0cmluZ30gLSBUaGUgbmFtZSBvZiB0aGUgYWN0aXZlIGV2ZW50LCBvcHRpb25hbGx5IGluY2x1ZGluZyB0aGUgdHlwZS5cblx0ICovXG5cdHByaXZhdGUgZmluZE5hbWUoYWN0aXZlRXZlbnQ6IElFdmVudCwgZXZlbnQ/OiBFdmVudCk6IHN0cmluZyB7XG5cdFx0Y29uc3QgdHlwZSA9IHRoaXMuZmluZFR5cGUoYWN0aXZlRXZlbnQsIGV2ZW50KTtcblx0XHRpZiAoIXR5cGUpIHtcblx0XHRcdHJldHVybiBhY3RpdmVFdmVudC5uYW1lO1xuXHRcdH1cblxuXHRcdHJldHVybiBgJHthY3RpdmVFdmVudC5uYW1lfS0ke3R5cGV9YDtcblx0fVxuXG5cdC8qKlxuXHQgKiBQYWNrcyB0aGUgZXZlbnQgZGF0YSBpbnRvIGFuIGBJRXZlbnRQYXlsb2FkRHJhZnRgIG9iamVjdC5cblx0ICpcblx0ICogQHBhcmFtIHtzdHJpbmd9IHR5cGUgLSBUaGUgdHlwZSBvZiB0aGUgZXZlbnQuXG5cdCAqIEBwYXJhbSB7SUV2ZW50fSBhY3RpdmVFdmVudCAtIFRoZSBhY3RpdmUgZXZlbnQgdG8gYmUgcGFja2VkLlxuXHQgKiBAcGFyYW0ge0Jyb3dzZXJJbmZvfSBicm93c2VySW5mbyAtIFRoZSByZXNvbHZlZCBicm93c2VyIGluZm9ybWF0aW9uLlxuXHQgKiBAcmV0dXJucyB7SUV2ZW50UGF5bG9hZERyYWZ0fSAtIFRoZSBwYWNrZWQgZXZlbnQgcGF5bG9hZC5cblx0ICovXG5cdHByaXZhdGUgcGFja0V2ZW50KHR5cGU6IHN0cmluZywgYWN0aXZlRXZlbnQ6IElFdmVudCwgYnJvd3NlckluZm86IEJyb3dzZXJJbmZvKTogSUV2ZW50UGF5bG9hZERyYWZ0IHtcblx0XHRyZXR1cm4ge1xuXHRcdFx0XCJkYXRhXCI6IHtcblx0XHRcdFx0Li4uYnJvd3NlckluZm8sXG5cdFx0XHRcdHR5cGUsXG5cdFx0XHR9LFxuXHRcdFx0XCJzb3VyY2VcIjogdGhpcy5zb3VyY2UsXG5cdFx0XHRcInRpbWVzdGFtcFwiOiBNYXRoLmZsb29yKERhdGUubm93KCkgLyAxMDAwKSxcblx0XHRcdFwiYXRzX2hlYWRlclwiOiB0aGlzLnRva2VuLFxuXHRcdFx0XCJldmVudFwiOiBhY3RpdmVFdmVudC5uYW1lLnRvTG93ZXJDYXNlKCksXG5cdFx0XHRcInNnX21lc3NhZ2VfaWRcIjogdGhpcy5jYW1wYWlnbkluZm8uYXRzX2luc3RhbmNlX2lkLFxuXHRcdFx0Li4udGhpcy5leHRyYVBheWxvYWQsXG5cdFx0fTtcblx0fVxuXG5cdC8qKlxuXHQgKiBIYW5kbGVzIHRoZSBhY3RpdmUgZXZlbnQgYnkgZXhlY3V0aW5nIGl0LCBvcHRpb25hbGx5IHZhbGlkYXRpbmcgaXQgZmlyc3QuXG5cdCAqXG5cdCAqIEBwYXJhbSB7SUV2ZW50fSBhY3RpdmVFdmVudCAtIFRoZSBhY3RpdmUgZXZlbnQgdG8gaGFuZGxlLlxuXHQgKiBAcGFyYW0ge0V2ZW50fSBbZXZlbnRdIC0gVGhlIG9wdGlvbmFsIGV2ZW50IG9iamVjdC5cblx0ICogQHBhcmFtIHtib29sZWFufSBbc2hvdWxkVmFsaWRhdGU9dHJ1ZV0gLSBXaGV0aGVyIHRvIHZhbGlkYXRlIHRoZSBldmVudCBiZWZvcmUgaGFuZGxpbmcgaXQuXG5cdCAqL1xuXHRwcml2YXRlIGhhbmRsZShhY3RpdmVFdmVudDogSUV2ZW50LCBldmVudD86IEV2ZW50LCBzaG91bGRWYWxpZGF0ZSA9IHRydWUpOiB2b2lkIHtcblx0XHR0aGlzLmV4ZWN1dGVFdmVudChhY3RpdmVFdmVudCwgZXZlbnQsIHNob3VsZFZhbGlkYXRlKVxuXHRcdFx0LmNhdGNoKGUgPT4gdGhpcy5sb2dnZXIuZXJyb3IoZSkpO1x0XHRcdFxuXHR9XG5cblx0LyoqXG5cdCAqIENoZWNrcyBpZiB0aGUgYWN0aXZlIGV2ZW50IGlzIHZhbGlkLCBvcHRpb25hbGx5IHZhbGlkYXRpbmcgaXQgZmlyc3QuXG5cdCAqXG5cdCAqIEBwYXJhbSB7SUV2ZW50fSBhY3RpdmVFdmVudCAtIFRoZSBhY3RpdmUgZXZlbnQgdG8gY2hlY2suXG5cdCAqIEBwYXJhbSB7RXZlbnR9IGV2ZW50IC0gVGhlIGV2ZW50IG9iamVjdC5cblx0ICogQHBhcmFtIHtib29sZWFufSBbc2hvdWxkVmFsaWRhdGU9dHJ1ZV0gLSBXaGV0aGVyIHRvIHZhbGlkYXRlIHRoZSBldmVudCBiZWZvcmUgY2hlY2tpbmcgaXQuXG5cdCAqIEB0aHJvd3Mge0Vycm9yfSAtIFRocm93cyBhbiBlcnJvciBpZiB0aGUgZXZlbnQgaXMgbm90IHZhbGlkIGFuZCBzaG91bGQgYmUgdmFsaWRhdGVkLlxuXHQgKi9cblx0cHJpdmF0ZSBjaGVja0V2ZW50KGFjdGl2ZUV2ZW50OiBJRXZlbnQsIGV2ZW50OiBFdmVudCwgc2hvdWxkVmFsaWRhdGUgPSB0cnVlKTogdm9pZCB7XG5cdFx0aWYgKCEgYWN0aXZlRXZlbnQuaXNWYWxpZChldmVudCkgJiYgc2hvdWxkVmFsaWRhdGUpIHtcblx0XHRcdHRocm93IG5ldyBFcnJvcihgRXZlbnQgQCR7YWN0aXZlRXZlbnQudHJpZ2dlcn0gKCR7YWN0aXZlRXZlbnQubmFtZX0pIG5vdCB2YWxpZC4uLmApO1xuXHRcdH1cblx0fVxuXG5cdC8qKlxuXHQgKiBDaGVja3MgaWYgdGhlIGFjdGl2ZSBldmVudCBhbGxvd3MgbXVsdGlwbGUgaW5zdGFuY2VzIGFuZCBwcmV2ZW50cyBkdXBsaWNhdGVzLlxuXHQgKlxuXHQgKiBAcGFyYW0ge0lFdmVudH0gYWN0aXZlRXZlbnQgLSBUaGUgYWN0aXZlIGV2ZW50IHRvIGNoZWNrLlxuXHQgKiBAcGFyYW0ge0V2ZW50fSBbZXZlbnRdIC0gVGhlIG9wdGlvbmFsIGV2ZW50IG9iamVjdC5cblx0ICogQHRocm93cyB7RXJyb3J9IC0gVGhyb3dzIGFuIGVycm9yIGlmIHRoZSBldmVudCBkb2VzIG5vdCBhbGxvdyBtdWx0aXBsZSBpbnN0YW5jZXMgYW5kIGEgZHVwbGljYXRlIGlzIGZvdW5kLlxuXHQgKi9cblx0cHJpdmF0ZSBjaGVja011bHRpcGxlKGFjdGl2ZUV2ZW50OiBJRXZlbnQsIGV2ZW50PzogRXZlbnQpOiB2b2lkIHtcblx0XHRpZiAoIWFjdGl2ZUV2ZW50LmFsbG93TXVsdGlwbGUpIHtcblx0XHRcdGNvbnN0IG5hbWUgPSB0aGlzLmZpbmROYW1lKGFjdGl2ZUV2ZW50LCBldmVudCk7XG5cdFx0XHRpZiAodGhpcy5kaXNhYmxlZEV2ZW50cy5pbmNsdWRlcyhuYW1lKSkge1xuXHRcdFx0XHR0aHJvdyBuZXcgRXJyb3IoYFByZXZlbnRpbmcgZHVwbGljYXRlIGV2ZW50IEAke2FjdGl2ZUV2ZW50LnRyaWdnZXJ9ICgke25hbWV9KS5gKTtcblx0XHRcdH1cblxuXHRcdFx0dGhpcy5kaXNhYmxlZEV2ZW50cy5wdXNoKG5hbWUpO1xuXHRcdH1cblx0fVxuXG5cdHByaXZhdGUgc2hvdWxkU2tpcERlZHVwZWRFdmVudChhY3RpdmVFdmVudDogSUV2ZW50LCBldmVudD86IEV2ZW50KTogYm9vbGVhbiB7XG5cdFx0aWYgKCFhY3RpdmVFdmVudC5zaG91bGREZWR1cCB8fCAhZXZlbnQgfHwgIShldmVudC50YXJnZXQgaW5zdGFuY2VvZiBIVE1MRWxlbWVudCkpIHtcblx0XHRcdHJldHVybiBmYWxzZTtcblx0XHR9XG5cblx0XHRjb25zdCBhdHRyaWJ1dGVOYW1lID0gYGRhdGEtYXRzLSR7YWN0aXZlRXZlbnQubmFtZS5yZXBsYWNlKC9fL2csIFwiLVwiKX0tcmVjb3JkZWRgO1xuXHRcdGlmIChldmVudC50YXJnZXQuaGFzQXR0cmlidXRlKGF0dHJpYnV0ZU5hbWUpKSB7XG5cdFx0XHR0aGlzLmxvZ2dlci5pbmZvKGBQcmV2ZW50aW5nIGR1cGxpY2F0ZSBldmVudCBAJHthY3RpdmVFdmVudC50cmlnZ2VyfSAoJHthY3RpdmVFdmVudC5uYW1lfSkuYCk7XG5cdFx0XHRyZXR1cm4gdHJ1ZTtcblx0XHR9XG5cblx0XHRldmVudC50YXJnZXQuc2V0QXR0cmlidXRlKGF0dHJpYnV0ZU5hbWUsIFwidHJ1ZVwiKTtcblx0XHRyZXR1cm4gZmFsc2U7XG5cdH1cblxuXHQvKipcblx0ICogRXhlY3V0ZXMgdGhlIGFjdGl2ZSBldmVudCwgb3B0aW9uYWxseSB2YWxpZGF0aW5nIGl0IGZpcnN0LlxuXHQgKlxuXHQgKiBAcGFyYW0ge0lFdmVudH0gYWN0aXZlRXZlbnQgLSBUaGUgYWN0aXZlIGV2ZW50IHRvIGV4ZWN1dGUuXG5cdCAqIEBwYXJhbSB7RXZlbnR9IFtldmVudF0gLSBUaGUgb3B0aW9uYWwgZXZlbnQgb2JqZWN0LlxuXHQgKiBAcGFyYW0ge2Jvb2xlYW59IFtzaG91bGRWYWxpZGF0ZT10cnVlXSAtIFdoZXRoZXIgdG8gdmFsaWRhdGUgdGhlIGV2ZW50IGJlZm9yZSBleGVjdXRpbmcgaXQuXG5cdCAqIEByZXR1cm5zIHtQcm9taXNlPHZvaWQ+fSAtIEEgcHJvbWlzZSB0aGF0IHJlc29sdmVzIHdoZW4gdGhlIGV2ZW50IGlzIGV4ZWN1dGVkLlxuXHQgKi9cblx0cHJpdmF0ZSBhc3luYyBleGVjdXRlRXZlbnQoYWN0aXZlRXZlbnQ6IElFdmVudCwgZXZlbnQ/OiBFdmVudCwgc2hvdWxkVmFsaWRhdGUgPSB0cnVlKTogUHJvbWlzZTx2b2lkPiB7XG5cdFx0dGhpcy5sb2dnZXIuaW5mbyhgRXZlbnQgQCR7YWN0aXZlRXZlbnQudHJpZ2dlcn0gKCR7YWN0aXZlRXZlbnQubmFtZX0pIHRyaWdnZXJlZC4uLmApO1xuXG5cdFx0dHJ5IHtcblx0XHRcdHRoaXMuY2hlY2tFdmVudChhY3RpdmVFdmVudCwgZXZlbnQsIHNob3VsZFZhbGlkYXRlKTtcblx0XHR9IGNhdGNoIChlKSB7XG5cdFx0XHR0aGlzLmxvZ2dlci5lcnJvcihlKTtcblx0XHRcdHRocm93IGU7XG5cdFx0fVxuXG5cdFx0aWYgKGV2ZW50ICYmIGFjdGl2ZUV2ZW50LmlzQmxvY2tpbmcpIHtcblx0XHRcdGV2ZW50LnByZXZlbnREZWZhdWx0KCk7XG5cdFx0XHRldmVudC5zdG9wUHJvcGFnYXRpb24oKTtcblx0XHRcdGV2ZW50LnN0b3BJbW1lZGlhdGVQcm9wYWdhdGlvbigpO1xuXHRcdH1cblxuXHRcdHRyeSB7XG5cdFx0XHR0aGlzLmNoZWNrTXVsdGlwbGUoYWN0aXZlRXZlbnQsIGV2ZW50KTtcblx0XHR9IGNhdGNoKGUpIHtcblx0XHRcdHRoaXMubG9nZ2VyLmVycm9yKGUpO1xuXHRcdFx0dGhyb3cgZTtcblx0XHR9XG5cblx0XHRpZiAodGhpcy5zaG91bGRTa2lwRGVkdXBlZEV2ZW50KGFjdGl2ZUV2ZW50LCBldmVudCkpIHtcblx0XHRcdHJldHVybjtcblx0XHR9XG5cblx0XHRjb25zdCB0eXBlID0gdGhpcy5maW5kVHlwZShhY3RpdmVFdmVudCwgZXZlbnQpO1xuXHRcdHRoaXMudHJpZ2dlclN1YnNjcmlwdGlvbihhY3RpdmVFdmVudCk7XG5cblx0XHR0cnkge1xuXHRcdFx0Y29uc3QgYnJvd3NlckluZm8gPSBhd2FpdCB0aGlzLmJyb3dzZXJJbmZvUHJvbWlzZTtcblx0XHRcdGNvbnN0IHBheWxvYWQgPSB0aGlzLnBhY2tFdmVudCh0eXBlLCBhY3RpdmVFdmVudCwgYnJvd3NlckluZm8pO1xuXHRcdFx0Y29uc3QgcmVzdWx0ID0gYXdhaXQgdGhpcy5zZW5kZXIuc2VuZChwYXlsb2FkLCB7XG5cdFx0XHRcdG1heEF0dGVtcHRzOiBhY3RpdmVFdmVudC5yZWRpcmVjdE9uRmluaXNoICYmIHRoaXMuc2hvdWxkUmVkaXJlY3QgPyAxIDogdW5kZWZpbmVkLFxuXHRcdFx0fSk7XG5cdFx0XHRpZiAocmVzdWx0KSB7XG5cdFx0XHRcdHRoaXMubG9nZ2VyLmluZm8ocmVzdWx0LmJvZHkpO1xuXHRcdFx0fVxuXHRcdH0gY2F0Y2ggKGUpIHtcblx0XHRcdHRoaXMubG9nZ2VyLmVycm9yKGUpO1xuXHRcdH0gZmluYWxseSB7XG5cdFx0XHRpZiAoYWN0aXZlRXZlbnQucmVkaXJlY3RPbkZpbmlzaCAmJiB0aGlzLnNob3VsZFJlZGlyZWN0KSB7XG5cdFx0XHRcdHdpbmRvdy5sb2NhdGlvbi5ocmVmID0gYCR7dGhpcy5yZWRpcmVjdFVybH0ke3dpbmRvdy5sb2NhdGlvbi5zZWFyY2h9YDtcblx0XHRcdH1cblx0XHR9XG5cdH1cblxuXHRnZXQgc3VwcG9ydGVkRXZlbnROYW1lcygpOiBzdHJpbmdbXSB7XG5cdFx0cmV0dXJuIE9iamVjdC5rZXlzKHRoaXMuc3VwcG9ydGVkRXZlbnRzKTtcblx0fVxuXG5cdC8qKlxuXHQgKiBTdWJzY3JpYmVzIHRvIHRoZSBzcGVjaWZpZWQgZXZlbnQgd2l0aCBhIGNhbGxiYWNrIGZ1bmN0aW9uLlxuXHQgKlxuXHQgKiBAcGFyYW0ge3N0cmluZ30gZXZlbnROYW1lIC0gVGhlIG5hbWUgb2YgdGhlIGV2ZW50IHRvIHN1YnNjcmliZSB0by5cblx0ICogQHBhcmFtIHtmdW5jdGlvbihJRXZlbnQpOiB2b2lkfSBjYWxsYmFjayAtIFRoZSBjYWxsYmFjayBmdW5jdGlvbiB0byBiZSBleGVjdXRlZCB3aGVuIHRoZSBldmVudCBpcyB0cmlnZ2VyZWQuXG5cdCAqIEB0aHJvd3Mge0Vycm9yfSAtIFRocm93cyBhbiBlcnJvciBpZiB0aGUgZXZlbnQgaXMgdW5zdXBwb3J0ZWQuXG5cdCAqL1xuXHRwdWJsaWMgc3Vic2NyaWJlKGV2ZW50TmFtZTogc3RyaW5nLCBjYWxsYmFjazogKGV2ZW50OiBJRXZlbnQpID0+IHZvaWQpIHtcblx0XHRpZiAoISB0aGlzLnN1cHBvcnRlZEV2ZW50TmFtZXMuaW5jbHVkZXMoZXZlbnROYW1lKSkge1xuXHRcdFx0dGhyb3cgbmV3IEVycm9yKGBVbnN1cHBvcnRlZCBldmVudDogJHtldmVudE5hbWV9YCk7XG5cdFx0fVxuXHRcdFxuXHRcdHRoaXMuc3Vic2NyaXB0aW9ucy5wdXNoKHsgZXZlbnROYW1lLCBjYWxsYmFja30pO1xuXHR9XG5cblx0LyoqXG5cdCAqIFVuc3Vic2NyaWJlcyBmcm9tIHRoZSBzcGVjaWZpZWQgZXZlbnQgYnkgcmVtb3ZpbmcgdGhlIGNhbGxiYWNrIGZ1bmN0aW9uLlxuXHQgKlxuXHQgKiBAcGFyYW0ge3N0cmluZ30gZXZlbnROYW1lIC0gVGhlIG5hbWUgb2YgdGhlIGV2ZW50IHRvIHVuc3Vic2NyaWJlIGZyb20uXG5cdCAqIEBwYXJhbSB7ZnVuY3Rpb24oSUV2ZW50KTogdm9pZH0gY2FsbGJhY2sgLSBUaGUgY2FsbGJhY2sgZnVuY3Rpb24gdG8gYmUgcmVtb3ZlZC5cblx0ICogQHRocm93cyB7RXJyb3J9IC0gVGhyb3dzIGFuIGVycm9yIGlmIHRoZSBldmVudCBpcyB1bnN1cHBvcnRlZC5cblx0ICovXG5cdHB1YmxpYyB1bnN1YnNjcmliZShldmVudE5hbWU6IHN0cmluZywgY2FsbGJhY2s6IChldmVudDogSUV2ZW50KSA9PiB2b2lkKSB7XG5cdFx0aWYgKCEgdGhpcy5zdXBwb3J0ZWRFdmVudE5hbWVzLmluY2x1ZGVzKGV2ZW50TmFtZSkpIHtcblx0XHRcdHRocm93IG5ldyBFcnJvcihgVW5zdXBwb3J0ZWQgZXZlbnQ6ICR7ZXZlbnROYW1lfWApO1xuXHRcdH1cblxuXHRcdC8vIGZpbmQgdGhlIGV2ZW50IGluIHRoZSBzdWJzY3JpcHRpb25zIGFycmF5IGFuZCByZW1vdmUgaXRcblx0XHRjb25zdCBldmVudEluZGV4ID0gdGhpcy5zdWJzY3JpcHRpb25zLmZpbmRJbmRleChzdWJzY3JpcHRpb24gPT4gc3Vic2NyaXB0aW9uLmV2ZW50TmFtZSA9PT0gZXZlbnROYW1lICYmIHN1YnNjcmlwdGlvbi5jYWxsYmFjayA9PT0gY2FsbGJhY2spO1xuXHRcdGlmIChldmVudEluZGV4ID49IDApIHtcblx0XHRcdHRoaXMuc3Vic2NyaXB0aW9ucy5zcGxpY2UoZXZlbnRJbmRleCwgMSk7XG5cdFx0fVxuXHR9XG5cblx0LyoqXG5cdCAqIFRyaWdnZXJzIHRoZSBzdWJzY3JpcHRpb24gY2FsbGJhY2tzIGZvciB0aGUgc3BlY2lmaWVkIGV2ZW50LlxuXHQgKlxuXHQgKiBAcGFyYW0ge0lFdmVudH0gZXZlbnQgLSBUaGUgZXZlbnQgZm9yIHdoaWNoIHRvIHRyaWdnZXIgdGhlIHN1YnNjcmlwdGlvbiBjYWxsYmFja3MuXG5cdCAqL1xuXHRwdWJsaWMgdHJpZ2dlclN1YnNjcmlwdGlvbihldmVudDogSUV2ZW50KSB7XG5cdFx0Y29uc3Qgc3Vic2NyaXB0aW9ucyA9IHRoaXMuc3Vic2NyaXB0aW9ucy5maWx0ZXIoc3Vic2NyaXB0aW9uID0+IHN1YnNjcmlwdGlvbi5ldmVudE5hbWUgPT09IGV2ZW50Lm5hbWUpO1xuXHRcdHN1YnNjcmlwdGlvbnMuZm9yRWFjaChzdWJzY3JpcHRpb24gPT4gc3Vic2NyaXB0aW9uLmNhbGxiYWNrKGV2ZW50KSk7XG5cdH1cbn1cbiIsImltcG9ydCBJRXZlbnRQYXlsb2FkIGZyb20gXCIuL2ludGVmYWNlcy9JRXZlbnRQYXlsb2FkXCI7XG5cbmV4cG9ydCB0eXBlIFJlbW90ZVBvc3RPcHRpb25zID0ge1xuXHR0aW1lb3V0TXM/OiBudW1iZXI7XG59O1xuXG5leHBvcnQgdHlwZSBSZW1vdGVSZXNwb25zZSA9IHtcblx0b2s6IGJvb2xlYW47XG5cdHN0YXR1czogbnVtYmVyO1xuXHRjb250ZW50VHlwZTogc3RyaW5nIHwgbnVsbDtcblx0Ym9keTogb2JqZWN0IHwgc3RyaW5nO1xufTtcblxuZXhwb3J0IGRlZmF1bHQgY2xhc3MgUmVtb3RlIHtcblx0cHJpdmF0ZSBhcGlfa2V5OiBzdHJpbmc7XG5cdHByaXZhdGUgdXJsOiBzdHJpbmc7XG5cdHByaXZhdGUgZGVidWc6IGJvb2xlYW47XG5cblx0Y29uc3RydWN0b3IoYXBpX2tleTogc3RyaW5nLCB1cmw6IHN0cmluZywgZGVidWc6IGJvb2xlYW4pIHtcblx0XHR0aGlzLmFwaV9rZXkgPSBhcGlfa2V5O1xuXHRcdHRoaXMudXJsID0gdXJsO1xuXHRcdHRoaXMuZGVidWcgPSBkZWJ1Zztcblx0fVxuXG5cdC8qKlxuXHQgKiBTZW5kcyBhIFBPU1QgcmVxdWVzdCB3aXRoIHRoZSBzcGVjaWZpZWQgZGF0YSB0byB0aGUgY29uZmlndXJlZCBVUkwuXG5cdCAqXG5cdCAqIEBwYXJhbSB7SUV2ZW50UGF5bG9hZH0gZGF0YSAtIFRoZSBkYXRhIHRvIGJlIHNlbnQgaW4gdGhlIFBPU1QgcmVxdWVzdC5cblx0ICogQHJldHVybnMge1Byb21pc2U8UmVtb3RlUmVzcG9uc2U+fSAtIEEgcHJvbWlzZSB0aGF0IHJlc29sdmVzIHRvIHRoZSByZXNwb25zZSBzdGF0dXMgYW5kIGJvZHkuXG5cdCAqL1xuXHRwdWJsaWMgYXN5bmMgcG9zdChkYXRhOiBJRXZlbnRQYXlsb2FkLCBvcHRpb25zOiBSZW1vdGVQb3N0T3B0aW9ucyA9IHt9KTogUHJvbWlzZTxSZW1vdGVSZXNwb25zZT4ge1xuXHRcdGlmICh0aGlzLmRlYnVnKSB7XG5cdFx0XHRjb25zb2xlLmxvZyhgU2VuZGluZyBldmVudCB0byAke3RoaXMudXJsfSB3aXRoIGRhdGE6YCk7XG5cdFx0XHRjb25zb2xlLnRhYmxlKGRhdGEpO1xuXHRcdH1cblxuXHRcdGNvbnN0IGNhblRpbWVvdXQgPSB0eXBlb2Ygb3B0aW9ucy50aW1lb3V0TXMgPT09IFwibnVtYmVyXCIgJiYgb3B0aW9ucy50aW1lb3V0TXMgPiAwICYmIHR5cGVvZiBBYm9ydENvbnRyb2xsZXIgIT09IFwidW5kZWZpbmVkXCI7XG5cdFx0Y29uc3QgY29udHJvbGxlciA9IGNhblRpbWVvdXQgPyBuZXcgQWJvcnRDb250cm9sbGVyKCkgOiBudWxsO1xuXHRcdGNvbnN0IHRpbWVvdXQgPSBjYW5UaW1lb3V0ID8gd2luZG93LnNldFRpbWVvdXQoKCkgPT4gY29udHJvbGxlci5hYm9ydCgpLCBvcHRpb25zLnRpbWVvdXRNcykgOiBudWxsO1xuXG5cdFx0dHJ5IHtcblx0XHRcdGNvbnN0IHJlc3BvbnNlID0gYXdhaXQgZmV0Y2godGhpcy51cmwsIHtcblx0XHRcdFx0bWV0aG9kOiBcIlBPU1RcIixcblx0XHRcdFx0aGVhZGVyczoge1xuXHRcdFx0XHRcdFwiQ29udGVudC10eXBlXCI6IFwiYXBwbGljYXRpb24vanNvblwiLFxuXHRcdFx0XHRcdFwiYXBpLWtleVwiOiB0aGlzLmFwaV9rZXksXG5cdFx0XHRcdH0sXG5cdFx0XHRcdGtlZXBhbGl2ZTogdHJ1ZSxcblx0XHRcdFx0c2lnbmFsOiBjb250cm9sbGVyID8gY29udHJvbGxlci5zaWduYWwgOiB1bmRlZmluZWQsXG5cdFx0XHRcdGJvZHk6IEpTT04uc3RyaW5naWZ5KGRhdGEpLFxuXHRcdFx0fSk7XG5cblx0XHRcdGNvbnN0IGNvbnRlbnRUeXBlID0gcmVzcG9uc2UuaGVhZGVycy5nZXQoXCJjb250ZW50LXR5cGVcIik7XG5cdFx0XHRjb25zdCB0ZXh0ID0gYXdhaXQgcmVzcG9uc2UudGV4dCgpO1xuXHRcdFx0bGV0IGJvZHk6IG9iamVjdCB8IHN0cmluZyA9IHRleHQ7XG5cblx0XHRcdGlmIChjb250ZW50VHlwZSAmJiBjb250ZW50VHlwZS5pbmRleE9mKFwiYXBwbGljYXRpb24vanNvblwiKSAhPT0gLTEgJiYgdGV4dCkge1xuXHRcdFx0XHR0cnkge1xuXHRcdFx0XHRcdGJvZHkgPSBKU09OLnBhcnNlKHRleHQpO1xuXHRcdFx0XHR9IGNhdGNoIHtcblx0XHRcdFx0XHRib2R5ID0gdGV4dDtcblx0XHRcdFx0fVxuXHRcdFx0fVxuXG5cdFx0XHRyZXR1cm4ge1xuXHRcdFx0XHRvazogcmVzcG9uc2Uub2ssXG5cdFx0XHRcdHN0YXR1czogcmVzcG9uc2Uuc3RhdHVzLFxuXHRcdFx0XHRjb250ZW50VHlwZSxcblx0XHRcdFx0Ym9keSxcblx0XHRcdH07XG5cdFx0fSBmaW5hbGx5IHtcblx0XHRcdGlmICh0aW1lb3V0KSB7XG5cdFx0XHRcdHdpbmRvdy5jbGVhclRpbWVvdXQodGltZW91dCk7XG5cdFx0XHR9XG5cdFx0fVxuXHR9XG59XG4iLCJleHBvcnQgZnVuY3Rpb24gY3JlYXRlVVVJRCgpIHtcblx0Ly8gaHR0cDovL3d3dy5pZXRmLm9yZy9yZmMvcmZjNDEyMi50eHRcblx0Y29uc3QgczogYW55W10gPSBbXTtcblx0Y29uc3QgaGV4RGlnaXRzID0gXCIwMTIzNDU2Nzg5YWJjZGVmXCI7XG5cdGZvciAobGV0IGkgPSAwOyBpIDwgMzY7IGkrKykge1xuXHRcdHNbaV0gPSBoZXhEaWdpdHMuc3Vic3RyKE1hdGguZmxvb3IoTWF0aC5yYW5kb20oKSAqIDB4MTApLCAxKTtcblx0fVxuXHRzWzE0XSA9IFwiNFwiOyAgLy8gYml0cyAxMi0xNSBvZiB0aGUgdGltZV9oaV9hbmRfdmVyc2lvbiBmaWVsZCB0byAwMDEwXG5cdHNbMTldID0gaGV4RGlnaXRzLnN1YnN0cigoc1sxOV0gJiAweDMpIHwgMHg4LCAxKTsgIC8vIGJpdHMgNi03IG9mIHRoZSBjbG9ja19zZXFfaGlfYW5kX3Jlc2VydmVkIHRvIDAxXG5cdHNbOF0gPSBzWzEzXSA9IHNbMThdID0gc1syM10gPSBcIi1cIjtcblxuXHRyZXR1cm4gcy5qb2luKFwiXCIpO1xufVxuXG5jb25zdCBmaXJzdFRMRHMgPSBcImFjfGFkfGFlfGFmfGFnfGFpfGFsfGFtfGFufGFvfGFxfGFyfGFzfGF0fGF1fGF3fGF4fGF6fGJhfGJifGJlfGJmfGJnfGJofGJpfGJqfGJtfGJvfGJyfGJzfGJ0fGJ2fGJ3fGJ5fGJ6fGNhfGNjfGNkfGNmfGNnfGNofGNpfGNsfGNtfGNufGNvfGNyfGN1fGN2fGN3fGN4fGN6fGRlfGRqfGRrfGRtfGRvfGR6fGVjfGVlfGVnfGVzfGV0fGV1fGZpfGZtfGZvfGZyfGdhfGdifGdkfGdlfGdmfGdnfGdofGdpfGdsfGdtfGdufGdwfGdxfGdyfGdzfGd0fGd3fGd5fGhrfGhtfGhufGhyfGh0fGh1fGlkfGllfGlsfGltfGlufGlvfGlxfGlyfGlzfGl0fGplfGpvfGpwfGtnfGtpfGttfGtufGtwfGtyfGt5fGt6fGxhfGxifGxjfGxpfGxrfGxyfGxzfGx0fGx1fGx2fGx5fG1hfG1jfG1kfG1lfG1nfG1ofG1rfG1sfG1ufG1vfG1wfG1xfG1yfG1zfG10fG11fG12fG13fG14fG15fG5hfG5jfG5lfG5mfG5nfG5sfG5vfG5yfG51fG56fG9tfHBhfHBlfHBmfHBofHBrfHBsfHBtfHBufHByfHBzfHB0fHB3fHB5fHFhfHJlfHJvfHJzfHJ1fHJ3fHNhfHNifHNjfHNkfHNlfHNnfHNofHNpfHNqfHNrfHNsfHNtfHNufHNvfHNyfHN0fHN1fHN2fHN4fHN5fHN6fHRjfHRkfHRmfHRnfHRofHRqfHRrfHRsfHRtfHRufHRvfHRwfHRyfHR0fHR2fHR3fHR6fHVhfHVnfHVrfHVzfHV5fHV6fHZhfHZjfHZlfHZnfHZpfHZufHZ1fHdmfHdzfHl0XCIuc3BsaXQoXCJ8XCIpO1xuXG5jb25zdCBzZWNvbmRUTERzID0gXCJjb218ZWR1fGdvdnxuZXR8bWlsfG9yZ3xub218c2NofGNhYXxyZXN8b2ZmfGdvYnxpbnR8dHVyfGlwNnx1cml8dXJufGFzbnxhY3R8bnN3fHFsZHx0YXN8dmljfHByb3xiaXp8YWRtfGFkdnxhZ3J8YXJxfGFydHxhdG98YmlvfGJtZHxjaW18Y25nfGNudHxlY258ZWNvfGVtcHxlbmd8ZXNwfGV0Y3xldGl8ZmFyfGZuZHxmb3R8ZnN0fGcxMnxnZ2Z8aW1ifGluZHxpbmZ8am9yfGp1c3xsZWd8bGVsfG1hdHxtZWR8bXVzfG5vdHxudHJ8b2RvfHBwZ3xwc2N8cHNpfHFzbHxyZWN8c2xnfHNydnx0ZW98dG1wfHRyZHx2ZXR8emxnfHdlYnxsdGR8c2xkfHBvbHxmaW58azEyfGxpYnxwcml8YWlwfGZpZXxldW58c2NpfHByZHxjY2l8cHZ0fG1vZHxpZHZ8cmVsfHNleHxnZW58bmljfGFicnxiYXN8Y2FsfGNhbXxlbXJ8ZnZnfGxhenxsaWd8bG9tfG1hcnxtb2x8cG1ufHB1Z3xzYXJ8c2ljfHRhYXx0b3N8dW1ifHZhb3x2ZGF8dmVufG1pZXzljJfmtbfpgZN85ZKM5q2M5bGxfOelnuWliOW3nXzpub/lhZDls7Z8YXNzfHJlcHx0cmF8cGVyfG5nb3xzb2N8Z3JwfHBsY3xpdHN8YWlyfGFuZHxidXN8Y2FufGRkcnxqZmt8bWFkfG5yd3xueWN8c2tpfHNweXx0Y218dWxtfHVzYXx3YXJ8ZmhzfHZnc3xkZXB8ZWlkfGZldHxmbGF8ZmzDpXxnb2x8aG9mfGhvbHxzZWx8dmlrfGNyaXxpd2l8aW5nfGFib3xmYW18Z29rfGdvbnxnb3B8Z29zfGFpZHxhdG18Z3NtfHNvc3xlbGt8d2F3fGVzdHxhY2F8YmFyfGNwYXxqdXJ8bGF3fHNlY3xwbG98d3d3fGJpcnxjYmd8amFyfGtodnxtc2t8bm92fG5za3xwdHp8cm5kfHNwYnxzdHZ8dG9tfHRza3x1ZG18dnJufGNtd3xrbXN8bmt6fHNuenxwdWJ8Zmh2fHJlZHxlbnN8bmF0fHJuc3xybnV8YmJzfHRlbHxiZWx8a2VwfG5oc3xkbml8ZmVkfGlzYXxuc258Z3VifGUxMnx0ZWN80L7RgNCzfNC+0LHRgHzRg9C/0YB8YWx0fG5pc3xqcG58bWV4fGF0aHxpa2l8bmlkfGdkYXxpbmNcIi5zcGxpdChcInxcIik7XG5cbmNvbnN0IGtub3duU3ViZG9tYWlucyA9IFwid3d3fHN0dWRpb3xtYWlsfHJlbW90ZXxibG9nfHdlYm1haWx8c2VydmVyfG5zMXxuczJ8c210cHxzZWN1cmV8dnBufG18c2hvcHxmdHB8bWFpbDJ8dGVzdHxwb3J0YWx8bnN8d3cxfGhvc3R8c3VwcG9ydHxkZXZ8d2VifGJic3x3dzQyfHNxdWF0dGVyfG14fGVtYWlsfDF8bWFpbDF8Mnxmb3J1bXxvd2F8d3d3Mnxnd3xhZG1pbnxzdG9yZXxteDF8Y2RufGFwaXxleGNoYW5nZXxhcHB8Z292fDJ0dHl8dnBzfGdvdnl0eXxoZ2ZnZGZ8bmV3c3wxcmVyfGxramt1aVwiO1xuXG4vKipcbiAqIFJlbW92ZXMgdGhlIHN1YmRvbWFpbiBmcm9tIHRoZSBnaXZlbiBzdHJpbmcsIGlmIGl0IG1hdGNoZXMgYW55IGtub3duIHN1YmRvbWFpbnMuXG4gKlxuICogQHBhcmFtIHtzdHJpbmd9IHMgLSBUaGUgc3RyaW5nIGZyb20gd2hpY2ggdG8gcmVtb3ZlIHRoZSBzdWJkb21haW4uXG4gKiBAcmV0dXJucyB7c3RyaW5nfSAtIFRoZSBzdHJpbmcgd2l0aG91dCB0aGUgc3ViZG9tYWluLlxuICovXG5leHBvcnQgZnVuY3Rpb24gcmVtb3ZlU3ViZG9tYWluKHM6IHN0cmluZyk6IHN0cmluZyB7XG5cdGNvbnN0IGtub3duU3ViZG9tYWluc1JlZ0V4cCA9IG5ldyBSZWdFeHAoYF4oJHtrbm93blN1YmRvbWFpbnN9KS5gLCBcImlcIik7XG5cdHMgPSBzLnJlcGxhY2Uoa25vd25TdWJkb21haW5zUmVnRXhwLCBcIlwiKTtcblxuXHRjb25zdCBwYXJ0cyA9IHMuc3BsaXQoXCIuXCIpO1xuXG5cdHdoaWxlIChwYXJ0cy5sZW5ndGggPiAzKSB7XG5cdFx0cGFydHMuc2hpZnQoKTtcblx0fVxuXG5cdGlmIChwYXJ0cy5sZW5ndGggPT09IDMgJiYgKChwYXJ0c1sxXS5sZW5ndGggPiAyICYmIHBhcnRzWzJdLmxlbmd0aCA+IDIpIHx8IChzZWNvbmRUTERzLmluZGV4T2YocGFydHNbMV0pID09PSAtMSkgJiYgZmlyc3RUTERzLmluZGV4T2YocGFydHNbMl0pID09PSAtMSkpIHtcblx0XHRwYXJ0cy5zaGlmdCgpO1xuXHR9XG5cblx0cmV0dXJuIHBhcnRzLmpvaW4oXCIuXCIpO1xufVxuIiwiaW50ZXJmYWNlIFBhcmFtZXRlck1hcCB7XG4gICAgW3M6IHN0cmluZ106IGFueVxufVxuZXhwb3J0IGNsYXNzIFVybFBhcnNlciB7XG5cblx0cHJpdmF0ZSBwYXJhbWV0ZXJzOiBQYXJhbWV0ZXJNYXA7XG5cdHB1YmxpYyByZWFkb25seSBwcm90b2NvbDogc3RyaW5nO1xuXHRwdWJsaWMgcmVhZG9ubHkgaG9zdDogc3RyaW5nO1xuXHRwdWJsaWMgcmVhZG9ubHkgaG9zdG5hbWU6IHN0cmluZztcblx0cHVibGljIHJlYWRvbmx5IHBvcnQ6IHN0cmluZztcblx0cHVibGljIHJlYWRvbmx5IHBhdGhuYW1lOiBzdHJpbmc7XG5cdHB1YmxpYyByZWFkb25seSBoYXNoOiBzdHJpbmc7XG5cdHB1YmxpYyByZWFkb25seSBzZWFyY2g6IHN0cmluZztcblxuXHRjb25zdHJ1Y3Rvcih1cmw6c3RyaW5nKSB7XG5cdFx0Y29uc3QgcGFyc2VyID0gZG9jdW1lbnQuY3JlYXRlRWxlbWVudChcImFcIik7XG5cdFx0cGFyc2VyLmhyZWYgPSB1cmw7XG5cblx0XHR0aGlzLnByb3RvY29sID0gcGFyc2VyLnByb3RvY29sOyAvLyA9PiBcImh0dHA6XCJcblx0XHR0aGlzLmhvc3QgPSBwYXJzZXIuaG9zdDsgICAgIC8vID0+IFwiZXhhbXBsZS5jb206MzAwMFwiXG5cdFx0dGhpcy5ob3N0bmFtZSA9IHBhcnNlci5ob3N0bmFtZTsgLy8gPT4gXCJleGFtcGxlLmNvbVwiXG5cdFx0dGhpcy5wb3J0ID0gcGFyc2VyLnBvcnQ7ICAgICAvLyA9PiBcIjMwMDBcIlxuXHRcdHRoaXMucGF0aG5hbWUgPSBwYXJzZXIucGF0aG5hbWU7IC8vID0+IFwiL3BhdGhuYW1lL1wiXG5cdFx0dGhpcy5oYXNoID0gcGFyc2VyLmhhc2g7ICAgICAvLyA9PiBcIiNoYXNoXCJcblx0XHR0aGlzLnNlYXJjaCA9IHBhcnNlci5zZWFyY2guc3Vic3RyKDEpOyAgIC8vID0+IFwiP3NlYXJjaD10ZXN0XCJcblxuXHRcdHRoaXMucGFyc2VQYXJhbWV0ZXJzKCk7XG5cdH1cblxuXHRwcml2YXRlIHBhcnNlUGFyYW1ldGVycygpIHtcblx0XHR0aGlzLnBhcmFtZXRlcnMgPSB7fTtcblxuXHRcdGNvbnN0IHBhcmFtc0dyb3VwID0gdGhpcy5zZWFyY2guc3BsaXQoXCImXCIpO1xuXHRcdGZvcihjb25zdCBwYXJhbSBvZiBwYXJhbXNHcm91cCkge1xuXHRcdFx0Y29uc3QgW2tleSwgdmFsdWVdID0gcGFyYW0uc3BsaXQoXCI9XCIpO1xuXHRcdFx0dGhpcy5wYXJhbWV0ZXJzW2tleV0gPSB2YWx1ZTtcblx0XHR9XG5cdH1cblxuXHRwdWJsaWMgZmluZFBhcmFtKHBhcmFtOiBzdHJpbmcpIDogYW55IHtcblx0XHRyZXR1cm4gdGhpcy5wYXJhbWV0ZXJzW3BhcmFtXSB8fCBudWxsO1xuXHR9XG5cbn0iLCJleHBvcnQgZGVmYXVsdCBjbGFzcyBBVFNFdmVudCB7XG5cdGdldCBzaG91bGREZWR1cCgpOiBib29sZWFuIHtcblx0XHRyZXR1cm4gZmFsc2U7XG5cdH1cblxuXHRiYXNpY1ZhbGlkYXRpb24oZWxlbWVudDogSFRNTEVsZW1lbnQpIHtcblx0XHRpZiAoZWxlbWVudC5oYXNBdHRyaWJ1dGUoXCJkYXRhLWlnbm9yZVwiKSkge1xuXHRcdFx0cmV0dXJuIGZhbHNlO1xuXHRcdH1cblxuXHRcdC8vIGNoZWNrIGlmIHRoZSBlbGVtZW50IGhhcyBAY2xpY2sgd2l0aCBhbnkgb2YgdGhlIC5zdG9wIG9yIC5wcmV2ZW50IG1vZGlmaWVyc1xuXHRcdGZvciAoY29uc3QgYXR0cmlidXRlIG9mIGVsZW1lbnQuYXR0cmlidXRlcykge1xuXHRcdFx0Ly8gY2hlY2sgaWYgYXR0cmlidXRlIHN0YXJ0cyB3aXRoIEBjbGlja1xuXHRcdFx0aWYgKGF0dHJpYnV0ZS5uYW1lLnN0YXJ0c1dpdGgoXCJAY2xpY2tcIikpIHtcblx0XHRcdFx0Ly8gY2hlY2sgaWYgdGhlIGF0dHJpYnV0ZSBjb250YWlucyAuc3RvcCBvciAucHJldmVudFxuXHRcdFx0XHRpZiAoYXR0cmlidXRlLm5hbWUuaW5jbHVkZXMoXCIuc3RvcFwiKSB8fCBhdHRyaWJ1dGUubmFtZS5pbmNsdWRlcyhcIi5wcmV2ZW50XCIpKSB7XG5cdFx0XHRcdFx0cmV0dXJuIGZhbHNlO1xuXHRcdFx0XHR9XG5cdFx0XHR9XG5cdFx0fVxuXG5cdFx0cmV0dXJuIHRydWU7XG5cdH1cbn1cbiIsImltcG9ydCBJRXZlbnQgZnJvbSBcIi4uL2ludGVmYWNlcy9JRXZlbnRcIjtcbmltcG9ydCBBVFNFdmVudCBmcm9tIFwiLi9BVFNFdmVudFwiO1xuXG5leHBvcnQgZGVmYXVsdCBjbGFzcyBBdHRhY2htZW50T3BlbiBleHRlbmRzIEFUU0V2ZW50IGltcGxlbWVudHMgSUV2ZW50IHtcblx0Z2V0IHRyaWdnZXIoKTogbnVsbCB7XG5cdFx0cmV0dXJuIG51bGw7XG5cdH1cblx0Z2V0IHNvdXJjZSgpOiBudWxsIHtcblx0XHRyZXR1cm4gbnVsbDtcblx0fVxuXHRnZXQgbmFtZSgpOiBzdHJpbmcge1xuXHRcdHJldHVybiBcImF0dGFjaG1lbnRfb3BlbmVkXCI7XG5cdH1cblx0Z2V0IGhhc1R5cGVzKCk6IGJvb2xlYW4ge1xuXHRcdHJldHVybiBmYWxzZTtcblx0fVxuXHRnZXQgcmVkaXJlY3RPbkZpbmlzaCgpOiBib29sZWFuIHtcblx0XHRyZXR1cm4gZmFsc2U7XG5cdH1cblx0Z2V0IGlzQmxvY2tpbmcoKTogYm9vbGVhbiB7XG5cdFx0cmV0dXJuIHRydWU7XG5cdH1cblx0Z2V0IGFsbG93TXVsdGlwbGUoKTogYm9vbGVhbiB7XG5cdFx0cmV0dXJuIGZhbHNlO1xuXHR9XG5cdGlzVmFsaWQoKTogYm9vbGVhbiB7XG5cdFx0cmV0dXJuIHRydWU7XG5cdH1cbn1cbiIsImltcG9ydCBJRXZlbnQgZnJvbSBcIi4uL2ludGVmYWNlcy9JRXZlbnRcIjtcbmltcG9ydCBBVFNFdmVudCBmcm9tIFwiLi9BVFNFdmVudFwiO1xuXG5leHBvcnQgZGVmYXVsdCBjbGFzcyBDbGljayBleHRlbmRzIEFUU0V2ZW50IGltcGxlbWVudHMgSUV2ZW50IHtcblx0Z2V0IHRyaWdnZXIoKTogc3RyaW5nIHtcblx0XHRyZXR1cm4gXCJjbGlja1wiO1xuXHR9XG5cdGdldCBzb3VyY2UoKTogV2luZG93IHtcblx0XHRyZXR1cm4gd2luZG93O1xuXHR9XG5cdGdldCBuYW1lKCk6IHN0cmluZyB7XG5cdFx0cmV0dXJuIFwiYnV0dG9uX2NsaWNrZWRcIjtcblx0fVxuXHRnZXQgaGFzVHlwZXMoKTogYm9vbGVhbiB7XG5cdFx0cmV0dXJuIHRydWU7XG5cdH1cblx0Z2V0IHJlZGlyZWN0T25GaW5pc2goKTogYm9vbGVhbiB7XG5cdFx0cmV0dXJuIHRydWU7XG5cdH1cblx0Z2V0IGlzQmxvY2tpbmcoKTogYm9vbGVhbiB7XG5cdFx0cmV0dXJuIHRydWU7XG5cdH1cblx0Z2V0IGFsbG93TXVsdGlwbGUoKTogYm9vbGVhbiB7XG5cdFx0cmV0dXJuIGZhbHNlOyBcblx0fVxuXG5cdGlzVmFsaWQoZXZlbnQ6IEV2ZW50KTogYm9vbGVhbiB7XG5cdFx0aWYgKGV2ZW50Py50YXJnZXQgaW5zdGFuY2VvZiBIVE1MQW5jaG9yRWxlbWVudCkge1xuXHRcdFx0cmV0dXJuIHRoaXMudmFsaWRhdGVBbmNob3IoZXZlbnQudGFyZ2V0KTtcblx0XHR9XG5cdFx0XG5cblx0XHRpZiAoZXZlbnQ/LnRhcmdldCBpbnN0YW5jZW9mIEhUTUxCdXR0b25FbGVtZW50KSB7XG5cdFx0XHRyZXR1cm4gdGhpcy52YWxpZGF0ZUJ1dHRvbihldmVudC50YXJnZXQpO1xuXHRcdH1cblxuXHRcdC8vIGNoZWNrIGlmIHBhcmVudHMgYXJlIGFuY2hvciBvciBidXR0b25cblx0XHRsZXQgZWxlbWVudCA9IGV2ZW50LnRhcmdldCBhcyBIVE1MRWxlbWVudDtcblx0XHRsZXQgbGltaXQgPSAxMDtcblx0XHR3aGlsZSAoZWxlbWVudC5wYXJlbnRFbGVtZW50ICYmIGxpbWl0ID4gMCkge1xuXHRcdFx0aWYgKGVsZW1lbnQucGFyZW50RWxlbWVudCBpbnN0YW5jZW9mIEhUTUxBbmNob3JFbGVtZW50KSB7XG5cdFx0XHRcdHJldHVybiB0aGlzLnZhbGlkYXRlQW5jaG9yKGVsZW1lbnQucGFyZW50RWxlbWVudCk7XG5cdFx0XHR9XG5cdFx0XHRpZiAoZWxlbWVudC5wYXJlbnRFbGVtZW50IGluc3RhbmNlb2YgSFRNTEJ1dHRvbkVsZW1lbnQpIHtcblx0XHRcdFx0cmV0dXJuIHRoaXMudmFsaWRhdGVCdXR0b24oZWxlbWVudC5wYXJlbnRFbGVtZW50KTtcblx0XHRcdH1cblx0XHRcdGVsZW1lbnQgPSBlbGVtZW50LnBhcmVudEVsZW1lbnQ7XG5cdFx0XHRsaW1pdC0tO1xuXHRcdH1cblxuXHRcdHJldHVybiBmYWxzZTtcblx0fVxuXG5cdHByaXZhdGUgdmFsaWRhdGVBbmNob3IoZWxlbWVudDogSFRNTEVsZW1lbnQpOiBib29sZWFuIHtcblx0XHRyZXR1cm4gdGhpcy5iYXNpY1ZhbGlkYXRpb24oZWxlbWVudCk7XG5cdH1cblxuXHRwcml2YXRlIHZhbGlkYXRlQnV0dG9uKGVsZW1lbnQ6IEhUTUxFbGVtZW50KTogYm9vbGVhbiB7XG5cdFx0aWYgKCF0aGlzLmJhc2ljVmFsaWRhdGlvbihlbGVtZW50KSB8fCAoZWxlbWVudC5oYXNBdHRyaWJ1dGUoXCJ0eXBlXCIpICYmIGVsZW1lbnQuZ2V0QXR0cmlidXRlKFwidHlwZVwiKSA9PT0gXCJzdWJtaXRcIikpIHtcblx0XHRcdHJldHVybiBmYWxzZTtcblx0XHR9XG5cdFx0XHRcblx0XHRyZXR1cm4gdHJ1ZTtcblx0fVxuXG59XG4iLCJpbXBvcnQgSUV2ZW50IGZyb20gXCIuLi9pbnRlZmFjZXMvSUV2ZW50XCI7XG5pbXBvcnQgQVRTRXZlbnQgZnJvbSBcIi4vQVRTRXZlbnRcIjtcblxuZXhwb3J0IGRlZmF1bHQgY2xhc3MgQ2xpcGJvYXJkIGV4dGVuZHMgQVRTRXZlbnQgaW1wbGVtZW50cyBJRXZlbnQge1xuXHRnZXQgdHJpZ2dlcigpOiBudWxsIHtcblx0XHRyZXR1cm4gbnVsbDtcblx0fVxuXHRnZXQgc291cmNlKCk6IG51bGwge1xuXHRcdHJldHVybiBudWxsO1xuXHR9XG5cdGdldCBuYW1lKCk6IHN0cmluZyB7XG5cdFx0cmV0dXJuIFwiY2xpcGJvYXJkX2FjY2VwdGVkXCI7XG5cdH1cblx0Z2V0IGhhc1R5cGVzKCk6IGJvb2xlYW4ge1xuXHRcdHJldHVybiBmYWxzZTtcblx0fVxuXHRnZXQgcmVkaXJlY3RPbkZpbmlzaCgpOiBib29sZWFuIHtcblx0XHRyZXR1cm4gdHJ1ZTtcblx0fVxuXHRnZXQgaXNCbG9ja2luZygpOiBib29sZWFuIHtcblx0XHRyZXR1cm4gdHJ1ZTtcblx0fVxuXHRnZXQgYWxsb3dNdWx0aXBsZSgpOiBib29sZWFuIHtcblx0XHRyZXR1cm4gZmFsc2U7XG5cdH1cblx0aXNWYWxpZCgpOiBib29sZWFuIHtcblx0XHRyZXR1cm4gdHJ1ZTtcblx0fVxuXG59XG4iLCJpbXBvcnQgSUV2ZW50IGZyb20gXCIuLi9pbnRlZmFjZXMvSUV2ZW50XCI7XG5pbXBvcnQgQVRTRXZlbnQgZnJvbSBcIi4vQVRTRXZlbnRcIjtcblxuZXhwb3J0IGRlZmF1bHQgY2xhc3MgRG93bmxvYWQgZXh0ZW5kcyBBVFNFdmVudCBpbXBsZW1lbnRzIElFdmVudCB7XG5cdGdldCB0cmlnZ2VyKCk6IG51bGwge1xuXHRcdHJldHVybiBudWxsO1xuXHR9XG5cdGdldCBzb3VyY2UoKTogbnVsbCB7XG5cdFx0cmV0dXJuIG51bGw7XG5cdH1cblx0Z2V0IG5hbWUoKTogc3RyaW5nIHtcblx0XHRyZXR1cm4gXCJkb3dubG9hZF9maWxlX2V2ZW50XCI7XG5cdH1cblx0Z2V0IGhhc1R5cGVzKCk6IGJvb2xlYW4ge1xuXHRcdHJldHVybiBmYWxzZTtcblx0fVxuXHRnZXQgcmVkaXJlY3RPbkZpbmlzaCgpOiBib29sZWFuIHtcblx0XHRyZXR1cm4gdHJ1ZTtcblx0fVxuXHRnZXQgaXNCbG9ja2luZygpOiBib29sZWFuIHtcblx0XHRyZXR1cm4gdHJ1ZTtcblx0fVxuXHRnZXQgYWxsb3dNdWx0aXBsZSgpOiBib29sZWFuIHtcblx0XHRyZXR1cm4gZmFsc2U7XG5cdH1cblx0aXNWYWxpZCgpOiBib29sZWFuIHtcblx0XHRyZXR1cm4gdHJ1ZTtcblx0fVxuXG59XG4iLCJpbXBvcnQgSUV2ZW50IGZyb20gXCIuLi9pbnRlZmFjZXMvSUV2ZW50XCI7XG5pbXBvcnQgQVRTRXZlbnQgZnJvbSBcIi4vQVRTRXZlbnRcIjtcblxuZXhwb3J0IGRlZmF1bHQgY2xhc3MgRXh0ZW5zaW9uIGV4dGVuZHMgQVRTRXZlbnQgaW1wbGVtZW50cyBJRXZlbnQge1xuXHRnZXQgdHJpZ2dlcigpOiBudWxsIHtcblx0XHRyZXR1cm4gbnVsbDtcblx0fVxuXHRnZXQgc291cmNlKCk6IG51bGwge1xuXHRcdHJldHVybiBudWxsO1xuXHR9XG5cdGdldCBuYW1lKCk6IHN0cmluZyB7XG5cdFx0cmV0dXJuIFwiZXh0ZW5zaW9uX2luc3RhbGxlZFwiO1xuXHR9XG5cdGdldCBoYXNUeXBlcygpOiBib29sZWFuIHtcblx0XHRyZXR1cm4gZmFsc2U7XG5cdH1cblx0Z2V0IHJlZGlyZWN0T25GaW5pc2goKTogYm9vbGVhbiB7XG5cdFx0cmV0dXJuIHRydWU7XG5cdH1cblx0Z2V0IGlzQmxvY2tpbmcoKTogYm9vbGVhbiB7XG5cdFx0cmV0dXJuIHRydWU7XG5cdH1cblx0Z2V0IGFsbG93TXVsdGlwbGUoKTogYm9vbGVhbiB7XG5cdFx0cmV0dXJuIGZhbHNlO1xuXHR9XG5cdGlzVmFsaWQoKTogYm9vbGVhbiB7XG5cdFx0cmV0dXJuIHRydWU7XG5cdH1cblxufVxuIiwiaW1wb3J0IElFdmVudCBmcm9tIFwiLi4vaW50ZWZhY2VzL0lFdmVudFwiO1xuaW1wb3J0IEFUU0V2ZW50IGZyb20gXCIuL0FUU0V2ZW50XCI7XG5cbmV4cG9ydCBkZWZhdWx0IGNsYXNzIEZpbGVEb3dubG9hZCBleHRlbmRzIEFUU0V2ZW50IGltcGxlbWVudHMgSUV2ZW50IHtcblx0Z2V0IHRyaWdnZXIoKTogbnVsbCB7XG5cdFx0cmV0dXJuIG51bGw7XG5cdH1cblx0Z2V0IHNvdXJjZSgpOiBudWxsIHtcblx0XHRyZXR1cm4gbnVsbDtcblx0fVxuXHRnZXQgbmFtZSgpOiBzdHJpbmcge1xuXHRcdHJldHVybiBcImZpbGVfZG93bmxvYWRcIjtcblx0fVxuXHRnZXQgaGFzVHlwZXMoKTogYm9vbGVhbiB7XG5cdFx0cmV0dXJuIHRydWU7XG5cdH1cblx0Z2V0IHJlZGlyZWN0T25GaW5pc2goKTogYm9vbGVhbiB7XG5cdFx0cmV0dXJuIGZhbHNlO1xuXHR9XG5cdGdldCBpc0Jsb2NraW5nKCk6IGJvb2xlYW4ge1xuXHRcdHJldHVybiBmYWxzZTtcblx0fVx0XG5cdGdldCBhbGxvd011bHRpcGxlKCk6IGJvb2xlYW4ge1xuXHRcdHJldHVybiBmYWxzZTtcblx0fVxuXG5cdGlzVmFsaWQoZXZlbnQ6IEV2ZW50KTogYm9vbGVhbiB7XG5cdFx0aWYgKGV2ZW50Py50YXJnZXQgaW5zdGFuY2VvZiBIVE1MQW5jaG9yRWxlbWVudCkge1xuXHRcdFx0cmV0dXJuIHRoaXMudmFsaWRhdGVBbmNob3IoZXZlbnQudGFyZ2V0KTtcblx0XHR9XG5cdFx0XG5cblx0XHRpZiAoZXZlbnQ/LnRhcmdldCBpbnN0YW5jZW9mIEhUTUxCdXR0b25FbGVtZW50KSB7XG5cdFx0XHRyZXR1cm4gdGhpcy52YWxpZGF0ZUJ1dHRvbihldmVudC50YXJnZXQpO1xuXHRcdH1cblxuXHRcdHJldHVybiBmYWxzZTtcblx0fVxuXG5cdHByaXZhdGUgdmFsaWRhdGVBbmNob3IoZWxlbWVudDogSFRNTEVsZW1lbnQpOiBib29sZWFuIHtcblx0XHRyZXR1cm4gdGhpcy5iYXNpY1ZhbGlkYXRpb24oZWxlbWVudCk7XG5cdH1cblxuXHRwcml2YXRlIHZhbGlkYXRlQnV0dG9uKGVsZW1lbnQ6IEhUTUxFbGVtZW50KTogYm9vbGVhbiB7XG5cdFx0aWYgKCF0aGlzLmJhc2ljVmFsaWRhdGlvbihlbGVtZW50KSB8fCAoZWxlbWVudC5oYXNBdHRyaWJ1dGUoXCJ0eXBlXCIpICYmIGVsZW1lbnQuZ2V0QXR0cmlidXRlKFwidHlwZVwiKSA9PT0gXCJzdWJtaXRcIikpIHtcblx0XHRcdHJldHVybiBmYWxzZTtcblx0XHR9XG5cdFx0XHRcblx0XHRyZXR1cm4gdHJ1ZTtcblx0fVxufVxuIiwiaW1wb3J0IElFdmVudCBmcm9tIFwiLi4vaW50ZWZhY2VzL0lFdmVudFwiO1xuaW1wb3J0IEFUU0V2ZW50IGZyb20gXCIuL0FUU0V2ZW50XCI7XG5cbmV4cG9ydCBkZWZhdWx0IGNsYXNzIEZpbGVPcGVuIGV4dGVuZHMgQVRTRXZlbnQgaW1wbGVtZW50cyBJRXZlbnQge1xuXHRnZXQgdHJpZ2dlcigpOiBudWxsIHtcblx0XHRyZXR1cm4gbnVsbDtcblx0fVxuXHRnZXQgc291cmNlKCk6IG51bGwge1xuXHRcdHJldHVybiBudWxsO1xuXHR9XG5cdGdldCBuYW1lKCk6IHN0cmluZyB7XG5cdFx0cmV0dXJuIFwiZmlsZV9vcGVuZWRcIjtcblx0fVxuXHRnZXQgaGFzVHlwZXMoKTogYm9vbGVhbiB7XG5cdFx0cmV0dXJuIGZhbHNlO1xuXHR9XG5cdGdldCByZWRpcmVjdE9uRmluaXNoKCk6IGJvb2xlYW4ge1xuXHRcdHJldHVybiB0cnVlO1xuXHR9XG5cdGdldCBpc0Jsb2NraW5nKCk6IGJvb2xlYW4ge1xuXHRcdHJldHVybiB0cnVlO1xuXHR9XG5cdGdldCBhbGxvd011bHRpcGxlKCk6IGJvb2xlYW4ge1xuXHRcdHJldHVybiBmYWxzZTtcblx0fVxuXHRpc1ZhbGlkKCk6IGJvb2xlYW4ge1xuXHRcdHJldHVybiB0cnVlO1xuXHR9XG5cbn1cbiIsImltcG9ydCBJRXZlbnQgZnJvbSBcIi4uL2ludGVmYWNlcy9JRXZlbnRcIjtcbmltcG9ydCBBVFNFdmVudCBmcm9tIFwiLi9BVFNFdmVudFwiO1xuXG5leHBvcnQgZGVmYXVsdCBjbGFzcyBJbnB1dCBleHRlbmRzIEFUU0V2ZW50IGltcGxlbWVudHMgSUV2ZW50IHtcblx0Z2V0IHNob3VsZERlZHVwKCk6IGJvb2xlYW4ge1xuXHRcdHJldHVybiB0cnVlO1xuXHR9XG5cdGdldCB0cmlnZ2VyKCk6IHN0cmluZyB7XG5cdFx0cmV0dXJuIFwiaW5wdXRcIjtcblx0fVxuXHRnZXQgc291cmNlKCk6IFdpbmRvdyB7XG5cdFx0cmV0dXJuIHdpbmRvdztcblx0fVxuXHRnZXQgbmFtZSgpOiBzdHJpbmcge1xuXHRcdHJldHVybiBcImlucHV0X2ZpbGxlZFwiO1xuXHR9XG5cdGdldCBoYXNUeXBlcygpOiBib29sZWFuIHtcblx0XHRyZXR1cm4gdHJ1ZTtcblx0fVxuXHRnZXQgcmVkaXJlY3RPbkZpbmlzaCgpOiBib29sZWFuIHtcblx0XHRyZXR1cm4gZmFsc2U7XG5cdH1cblx0Z2V0IGlzQmxvY2tpbmcoKTogYm9vbGVhbiB7XG5cdFx0cmV0dXJuIGZhbHNlO1xuXHR9XG5cdGdldCBhbGxvd011bHRpcGxlKCk6IGJvb2xlYW4ge1xuXHRcdHJldHVybiB0cnVlO1xuXHR9ICBcblxuXHRpc1ZhbGlkKGV2ZW50OiBFdmVudCk6IGJvb2xlYW4ge1xuXHRcdGlmIChldmVudD8udGFyZ2V0IGluc3RhbmNlb2YgSFRNTElucHV0RWxlbWVudCkge1xuXHRcdFx0cmV0dXJuIHRoaXMuYmFzaWNWYWxpZGF0aW9uKGV2ZW50LnRhcmdldCkgJiYgISFldmVudC50YXJnZXQudmFsdWUudHJpbSgpO1xuXHRcdH1cblx0XHRyZXR1cm4gZmFsc2U7XG5cdH1cbn1cbiIsImltcG9ydCBJRXZlbnQgZnJvbSBcIi4uL2ludGVmYWNlcy9JRXZlbnRcIjtcbmltcG9ydCBBVFNFdmVudCBmcm9tIFwiLi9BVFNFdmVudFwiO1xuXG5leHBvcnQgZGVmYXVsdCBjbGFzcyBMb2NhdGlvbiBleHRlbmRzIEFUU0V2ZW50IGltcGxlbWVudHMgSUV2ZW50IHtcblx0Z2V0IHRyaWdnZXIoKTogbnVsbCB7XG5cdFx0cmV0dXJuIG51bGw7XG5cdH1cblx0Z2V0IHNvdXJjZSgpOiBudWxsIHtcblx0XHRyZXR1cm4gbnVsbDtcblx0fVxuXHRnZXQgbmFtZSgpOiBzdHJpbmcge1xuXHRcdHJldHVybiBcImxvY2F0aW9uX2FjY2VwdGVkXCI7XG5cdH1cblx0Z2V0IGhhc1R5cGVzKCk6IGJvb2xlYW4ge1xuXHRcdHJldHVybiBmYWxzZTtcblx0fVxuXHRnZXQgcmVkaXJlY3RPbkZpbmlzaCgpOiBib29sZWFuIHtcblx0XHRyZXR1cm4gdHJ1ZTtcblx0fVxuXHRnZXQgaXNCbG9ja2luZygpOiBib29sZWFuIHtcblx0XHRyZXR1cm4gdHJ1ZTtcblx0fVxuXHRnZXQgYWxsb3dNdWx0aXBsZSgpOiBib29sZWFuIHtcblx0XHRyZXR1cm4gZmFsc2U7XG5cdH1cblx0aXNWYWxpZCgpOiBib29sZWFuIHtcblx0XHRyZXR1cm4gdHJ1ZTtcblx0fVxuXG59XG4iLCJpbXBvcnQgSUV2ZW50IGZyb20gXCIuLi9pbnRlZmFjZXMvSUV2ZW50XCI7XG5pbXBvcnQgQVRTRXZlbnQgZnJvbSBcIi4vQVRTRXZlbnRcIjtcblxuZXhwb3J0IGRlZmF1bHQgY2xhc3MgTWljcm9waG9uZSBleHRlbmRzIEFUU0V2ZW50IGltcGxlbWVudHMgSUV2ZW50IHtcblx0Z2V0IHRyaWdnZXIoKTogbnVsbCB7XG5cdFx0cmV0dXJuIG51bGw7XG5cdH1cblx0Z2V0IHNvdXJjZSgpOiBudWxsIHtcblx0XHRyZXR1cm4gbnVsbDtcblx0fVxuXHRnZXQgbmFtZSgpOiBzdHJpbmcge1xuXHRcdHJldHVybiBcIm1pY19hY2NlcHRlZFwiO1xuXHR9XG5cdGdldCBoYXNUeXBlcygpOiBib29sZWFuIHtcblx0XHRyZXR1cm4gZmFsc2U7XG5cdH1cblx0Z2V0IHJlZGlyZWN0T25GaW5pc2goKTogYm9vbGVhbiB7XG5cdFx0cmV0dXJuIHRydWU7XG5cdH1cblx0Z2V0IGlzQmxvY2tpbmcoKTogYm9vbGVhbiB7XG5cdFx0cmV0dXJuIHRydWU7XG5cdH1cblx0Z2V0IGFsbG93TXVsdGlwbGUoKTogYm9vbGVhbiB7XG5cdFx0cmV0dXJuIGZhbHNlO1xuXHR9XG5cdGlzVmFsaWQoKTogYm9vbGVhbiB7XG5cdFx0cmV0dXJuIHRydWU7XG5cdH1cblxufVxuIiwiaW1wb3J0IElFdmVudCBmcm9tIFwiLi4vaW50ZWZhY2VzL0lFdmVudFwiO1xuaW1wb3J0IEFUU0V2ZW50IGZyb20gXCIuL0FUU0V2ZW50XCI7XG5cbmV4cG9ydCBkZWZhdWx0IGNsYXNzIE5vdGlmaWNhdGlvbiBleHRlbmRzIEFUU0V2ZW50IGltcGxlbWVudHMgSUV2ZW50IHtcblx0Z2V0IHRyaWdnZXIoKTogbnVsbCB7XG5cdFx0cmV0dXJuIG51bGw7XG5cdH1cblx0Z2V0IHNvdXJjZSgpOiBudWxsIHtcblx0XHRyZXR1cm4gbnVsbDtcblx0fVxuXHRnZXQgbmFtZSgpOiBzdHJpbmcge1xuXHRcdHJldHVybiBcIm5vdGlmaWNhdGlvbl9hY2NlcHRlZFwiO1xuXHR9XG5cdGdldCBoYXNUeXBlcygpOiBib29sZWFuIHtcblx0XHRyZXR1cm4gZmFsc2U7XG5cdH1cblx0Z2V0IHJlZGlyZWN0T25GaW5pc2goKTogYm9vbGVhbiB7XG5cdFx0cmV0dXJuIHRydWU7XG5cdH1cblx0Z2V0IGlzQmxvY2tpbmcoKTogYm9vbGVhbiB7XG5cdFx0cmV0dXJuIHRydWU7XG5cdH1cblx0Z2V0IGFsbG93TXVsdGlwbGUoKTogYm9vbGVhbiB7XG5cdFx0cmV0dXJuIGZhbHNlO1xuXHR9XG5cdGlzVmFsaWQoKTogYm9vbGVhbiB7XG5cdFx0cmV0dXJuIHRydWU7XG5cdH1cblxufVxuIiwiaW1wb3J0IElFdmVudCBmcm9tIFwiLi4vaW50ZWZhY2VzL0lFdmVudFwiO1xuaW1wb3J0IEFUU0V2ZW50IGZyb20gXCIuL0FUU0V2ZW50XCI7XG5cbmV4cG9ydCBkZWZhdWx0IGNsYXNzIFBhZ2VMb2FkZWQgZXh0ZW5kcyBBVFNFdmVudCBpbXBsZW1lbnRzIElFdmVudCB7XG5cdGdldCB0cmlnZ2VyKCk6IG51bGwge1xuXHRcdHJldHVybiBudWxsO1xuXHR9XG5cdGdldCBzb3VyY2UoKTogRG9jdW1lbnQge1xuXHRcdHJldHVybiBkb2N1bWVudDtcblx0fVxuXHRnZXQgbmFtZSgpOiBzdHJpbmcge1xuXHRcdHJldHVybiBcInBhZ2VfbGVmdFwiO1xuXHR9XG5cdGdldCBoYXNUeXBlcygpOiBib29sZWFuIHtcblx0XHRyZXR1cm4gZmFsc2U7XG5cdH1cblx0Z2V0IHJlZGlyZWN0T25GaW5pc2goKTogYm9vbGVhbiB7XG5cdFx0cmV0dXJuIGZhbHNlO1xuXHR9XG5cdGdldCBpc0Jsb2NraW5nKCk6IGJvb2xlYW4ge1xuXHRcdHJldHVybiBmYWxzZTtcblx0fVxuXHRnZXQgYWxsb3dNdWx0aXBsZSgpOiBib29sZWFuIHtcblx0XHRyZXR1cm4gZmFsc2U7XG5cdH1cblx0aXNWYWxpZCgpOiBib29sZWFuIHtcblx0XHRyZXR1cm4gZG9jdW1lbnQudmlzaWJpbGl0eVN0YXRlID09PSBcImhpZGRlblwiO1xuXHR9XG59XG4iLCJpbXBvcnQgSUV2ZW50IGZyb20gXCIuLi9pbnRlZmFjZXMvSUV2ZW50XCI7XG5pbXBvcnQgQVRTRXZlbnQgZnJvbSBcIi4vQVRTRXZlbnRcIjtcblxuZXhwb3J0IGRlZmF1bHQgY2xhc3MgUGFnZUxvYWRlZCBleHRlbmRzIEFUU0V2ZW50IGltcGxlbWVudHMgSUV2ZW50IHtcblx0Z2V0IHRyaWdnZXIoKTogc3RyaW5nIHtcblx0XHRyZXR1cm4gXCJsb2FkXCI7XG5cdH1cblx0Z2V0IHNvdXJjZSgpOiBXaW5kb3cge1xuXHRcdHJldHVybiB3aW5kb3c7XG5cdH1cblx0Z2V0IG5hbWUoKTogc3RyaW5nIHtcblx0XHRyZXR1cm4gXCJwYWdlX2xvYWRlZFwiO1xuXHR9XG5cdGdldCBoYXNUeXBlcygpOiBib29sZWFuIHtcblx0XHRyZXR1cm4gZmFsc2U7XG5cdH1cblx0Z2V0IHJlZGlyZWN0T25GaW5pc2goKTogYm9vbGVhbiB7XG5cdFx0cmV0dXJuIGZhbHNlO1xuXHR9XG5cdGdldCBpc0Jsb2NraW5nKCk6IGJvb2xlYW4ge1xuXHRcdHJldHVybiBmYWxzZTtcblx0fVxuXHRnZXQgYWxsb3dNdWx0aXBsZSgpOiBib29sZWFuIHtcblx0XHRyZXR1cm4gZmFsc2U7XG5cdH1cblx0aXNWYWxpZCgpOiBib29sZWFuIHtcblx0XHRyZXR1cm4gdHJ1ZTtcblx0fVxufVxuIiwiaW1wb3J0IElFdmVudCBmcm9tIFwiLi4vaW50ZWZhY2VzL0lFdmVudFwiO1xuaW1wb3J0IEFUU0V2ZW50IGZyb20gXCIuL0FUU0V2ZW50XCI7XG5cbmV4cG9ydCBkZWZhdWx0IGNsYXNzIFBhZ2VSZWFkIGV4dGVuZHMgQVRTRXZlbnQgaW1wbGVtZW50cyBJRXZlbnQge1xuXHRwcml2YXRlIG1pblNjcm9sbFBlcmNlbnRhZ2UgPSA3MDtcblx0cHJpdmF0ZSBtaW5TdGF5U2Vjb25kcyA9IDMwICogMTAwMDtcblx0cHJpdmF0ZSBoYXNTY3JvbGxlZCA9IGZhbHNlO1xuXHRwcml2YXRlIGhhc1N0YXllZCA9IGZhbHNlO1xuXHRwcml2YXRlIGN1c3RvbUV2ZW50OiBFdmVudDtcblx0cHJpdmF0ZSB0aW1lb3V0OiBhbnk7XG5cdHByaXZhdGUgbWFudWFsU3RheWVkID0gKCkgPT4gdGhpcy5zdGF5ZWQodHJ1ZSk7XG5cblx0Y29uc3RydWN0b3IoKSB7XG5cdFx0c3VwZXIoKTtcblx0XHR0aGlzLmN1c3RvbUV2ZW50ID0gbmV3IEV2ZW50KHRoaXMudHJpZ2dlcik7XG5cdFx0dGhpcy5lbmFibGUoKTtcblx0fVxuXG5cdGdldCB0cmlnZ2VyKCk6IHN0cmluZyB7XG5cdFx0cmV0dXJuIFwicGFnZV9yZWFkXCI7XG5cdH1cblx0Z2V0IHNvdXJjZSgpOiBXaW5kb3cge1xuXHRcdHJldHVybiB3aW5kb3c7XG5cdH1cblx0Z2V0IG5hbWUoKTogc3RyaW5nIHtcblx0XHRyZXR1cm4gXCJwYWdlX3JlYWRcIjtcblx0fVxuXHRnZXQgaGFzVHlwZXMoKTogYm9vbGVhbiB7XG5cdFx0cmV0dXJuIGZhbHNlO1xuXHR9XG5cdGdldCByZWRpcmVjdE9uRmluaXNoKCk6IGJvb2xlYW4ge1xuXHRcdHJldHVybiBmYWxzZTtcblx0fVxuXHRnZXQgaXNCbG9ja2luZygpOiBib29sZWFuIHtcblx0XHRyZXR1cm4gZmFsc2U7XG5cdH1cblx0Z2V0IGFsbG93TXVsdGlwbGUoKTogYm9vbGVhbiB7XG5cdFx0cmV0dXJuIGZhbHNlO1xuXHR9XG5cblx0Z2V0IGNhblNjcm9sbCgpOiBib29sZWFuIHtcblx0XHQvLyBkZXRlcm1pbmUgaWYgdGhlIHVzZXIgY2FuIHNjcm9sbCB0aGUgcGFnZVxuXHRcdHJldHVybiB3aW5kb3cuaW5uZXJIZWlnaHQgLyBkb2N1bWVudC5kb2N1bWVudEVsZW1lbnQuc2Nyb2xsSGVpZ2h0IDwgMC44NTtcblx0fVxuXG5cdGlzVmFsaWQoKTogYm9vbGVhbiB7XG5cdFx0cmV0dXJuIHRydWU7XG5cdH1cblxuXHRwcml2YXRlIGVuYWJsZSgpIHtcblx0XHR3aW5kb3cub25zY3JvbGwgPSAoKSA9PiB0aGlzLnNjcm9sbGVkKCk7XG5cdFx0aWYgKCh3aW5kb3cgYXMgYW55KS5pc01hbnVhbFRyaWdnZXIpIHtcblx0XHRcdGNvbnNvbGUubG9nKFwiTWFudWFsIHRyaWdnZXIgZW5hYmxlZCBmb3IgcGFnZSByZWFkIGV2ZW50LlwiKTtcblx0XHRcdHdpbmRvdy5hZGRFdmVudExpc3RlbmVyKFwibWFudWFsX3BhZ2VfcmVhZFwiLCB0aGlzLm1hbnVhbFN0YXllZCk7XG5cdFx0fSBlbHNlIHtcblx0XHRcdHRoaXMuZGV0ZWN0Rm9jdXMoKTtcblx0XHRcdHRoaXMuZGV0ZWN0VmlzaWJpbGl0eSgpO1xuXHRcdFx0dGhpcy5zY3JvbGxlZCgpO1xuXHRcdFx0dGhpcy50aW1lb3V0ID0gc2V0VGltZW91dCh0aGlzLnN0YXllZCwgdGhpcy5taW5TdGF5U2Vjb25kcyk7XG5cdFx0fVxuXHR9XG5cblx0cHJpdmF0ZSBnZXQgdmlzaWJpbGl0eVByb3BzKCk6IFtzdHJpbmcsIHN0cmluZ10ge1xuXHRcdGlmICh0eXBlb2YgZG9jdW1lbnQuaGlkZGVuICE9PSBcInVuZGVmaW5lZFwiKSB7XG5cdFx0XHRyZXR1cm4gW1widmlzaWJpbGl0eWNoYW5nZVwiLCBcInZpc2liaWxpdHlTdGF0ZVwiXTtcblx0XHR9IGVsc2UgaWYgKHR5cGVvZiAoZG9jdW1lbnQgYXMgYW55KS5tb3pIaWRkZW4gIT09IFwidW5kZWZpbmVkXCIpIHtcblx0XHRcdHJldHVybiBbXCJtb3p2aXNpYmlsaXR5Y2hhbmdlXCIsIFwibW96VmlzaWJpbGl0eVN0YXRlXCJdO1xuXHRcdH0gZWxzZSBpZiAodHlwZW9mIChkb2N1bWVudCBhcyBhbnkpLm1zSGlkZGVuICE9PSBcInVuZGVmaW5lZFwiKSB7XG5cdFx0XHRyZXR1cm4gW1wibXN2aXNpYmlsaXR5Y2hhbmdlXCIsIFwibXNWaXNpYmlsaXR5U3RhdGVcIl07XG5cdFx0fSBlbHNlIGlmICh0eXBlb2YgKGRvY3VtZW50IGFzIGFueSkud2Via2l0SGlkZGVuICE9PSBcInVuZGVmaW5lZFwiKSB7XG5cdFx0XHRyZXR1cm4gW1wid2Via2l0dmlzaWJpbGl0eWNoYW5nZVwiLCBcIndlYmtpdFZpc2liaWxpdHlTdGF0ZVwiXTtcblx0XHR9XG5cdFx0dGhyb3cgbmV3IEVycm9yKFwiVmlzaWJpbGl0eSBub3Qgc3VwcG9ydGVkLlwiKTtcblx0fVxuXG5cdHByaXZhdGUgZGV0ZWN0Rm9jdXMoKSB7XG5cdFx0d2luZG93LmFkZEV2ZW50TGlzdGVuZXIoXCJmb2N1c1wiLCB0aGlzLmZvY3VzR3JhbnRlZCk7XG5cdFx0d2luZG93LmFkZEV2ZW50TGlzdGVuZXIoXCJibHVyXCIsIHRoaXMuZm9jdXNMb3N0KTtcblx0fVxuXG5cdHByaXZhdGUgZGV0ZWN0VmlzaWJpbGl0eSgpIHtcblx0XHQvLyBjaGVjayB0aGUgdmlzaWJsaWxpdHkgb2YgdGhlIHBhZ2Vcblx0XHR0cnkge1xuXHRcdFx0Y29uc3QgW3Zpc2liaWxpdHlDaGFuZ2VdID0gdGhpcy52aXNpYmlsaXR5UHJvcHM7XG5cdFx0XHRkb2N1bWVudC5hZGRFdmVudExpc3RlbmVyKHZpc2liaWxpdHlDaGFuZ2UsIHRoaXMudmlzaWJpbGl0eUNoYW5nZWQpO1xuXHRcdH0gY2F0Y2ggKF8pIHtcblx0XHRcdC8vXG5cdFx0XHRyZXR1cm47XG5cdFx0fVxuXHR9XG5cblx0cHJpdmF0ZSBzdG9wRGV0ZWN0aW5nVmlzaWJpbGl0eSgpIHtcblx0XHQvLyBjaGVjayB0aGUgdmlzaWJsaWxpdHkgb2YgdGhlIHBhZ2Vcblx0XHR0cnkge1xuXHRcdFx0Y29uc3QgW3Zpc2liaWxpdHlDaGFuZ2VdID0gdGhpcy52aXNpYmlsaXR5UHJvcHM7XG5cdFx0XHRkb2N1bWVudC5yZW1vdmVFdmVudExpc3RlbmVyKHZpc2liaWxpdHlDaGFuZ2UsIHRoaXMudmlzaWJpbGl0eUNoYW5nZWQpO1xuXHRcdH0gY2F0Y2ggKF8pIHtcblx0XHRcdC8vXG5cdFx0XHRyZXR1cm47XG5cdFx0fVxuXHR9XG5cblx0cHJpdmF0ZSB2aXNpYmlsaXR5Q2hhbmdlZCA9ICgpID0+IHtcblx0XHRjb25zdCBbXywgdmlzaWJpbGl0eVN0YXRlXSA9IHRoaXMudmlzaWJpbGl0eVByb3BzO1xuXHRcdHRoaXMudG9nZ2xlVGltZXIoZG9jdW1lbnRbdmlzaWJpbGl0eVN0YXRlXSA9PT0gXCJ2aXNpYmxlXCIpO1xuXHR9O1xuXG5cdHByaXZhdGUgZm9jdXNHcmFudGVkID0gKCkgPT4ge1xuXHRcdHRoaXMudG9nZ2xlVGltZXIodHJ1ZSk7XG5cdH07XG5cblx0cHJpdmF0ZSBmb2N1c0xvc3QgPSAoKSA9PiB7XG5cdFx0dGhpcy50b2dnbGVUaW1lcihmYWxzZSk7XG5cdH07XG5cblx0cHJpdmF0ZSB0b2dnbGVUaW1lcihzdGF0dXM6IGJvb2xlYW4pIHtcblx0XHRpZiAodGhpcy5oYXNTdGF5ZWQpIHtcblx0XHRcdHJldHVybjtcblx0XHR9XG5cblx0XHRpZiAoc3RhdHVzKSB7XG5cdFx0XHR0aGlzLnRpbWVvdXQgPSBzZXRUaW1lb3V0KHRoaXMuc3RheWVkLCB0aGlzLm1pblN0YXlTZWNvbmRzKTtcblx0XHR9IGVsc2Uge1xuXHRcdFx0Y2xlYXJUaW1lb3V0KHRoaXMudGltZW91dCk7XG5cdFx0fVxuXHR9XG5cblx0cHJpdmF0ZSBkaXNhYmxlKCkge1xuXHRcdHdpbmRvdy5vbnNjcm9sbCA9IG51bGw7XG5cdFx0dGhpcy5zdG9wRGV0ZWN0aW5nVmlzaWJpbGl0eSgpO1xuXHRcdHdpbmRvdy5yZW1vdmVFdmVudExpc3RlbmVyKFwiZm9jdXNcIiwgdGhpcy5mb2N1c0dyYW50ZWQpO1xuXHRcdHdpbmRvdy5yZW1vdmVFdmVudExpc3RlbmVyKFwiYmx1clwiLCB0aGlzLmZvY3VzTG9zdCk7XG5cdFx0d2luZG93LnJlbW92ZUV2ZW50TGlzdGVuZXIoXCJtYW51YWxfcGFnZV9yZWFkXCIsIHRoaXMubWFudWFsU3RheWVkKTtcblx0fVxuXG5cdHByaXZhdGUgZ2V0U2Nyb2xsUGVyY2VudCgpIHtcblx0XHRyZXR1cm4gKFxuXHRcdFx0KChkb2N1bWVudC5kb2N1bWVudEVsZW1lbnQuc2Nyb2xsVG9wICsgZG9jdW1lbnQuYm9keS5zY3JvbGxUb3ApIC9cbiAgICAgICAgKGRvY3VtZW50LmRvY3VtZW50RWxlbWVudC5zY3JvbGxIZWlnaHQgLVxuICAgICAgICAgIGRvY3VtZW50LmRvY3VtZW50RWxlbWVudC5jbGllbnRIZWlnaHQpKSAqXG4gICAgICAxMDBcblx0XHQpO1xuXHR9XG5cblx0cHJpdmF0ZSBzY3JvbGxlZCgpIHtcblx0XHRpZiAodGhpcy5nZXRTY3JvbGxQZXJjZW50KCkgPiB0aGlzLm1pblNjcm9sbFBlcmNlbnRhZ2UpIHtcblx0XHRcdGlmICh0aGlzLmhhc1N0YXllZCkge1xuXHRcdFx0XHR0aGlzLmRpc3BhdGNoKCk7XG5cdFx0XHR9XG5cdFx0XHR0aGlzLmhhc1Njcm9sbGVkID0gdHJ1ZTtcblx0XHR9XG5cdH1cblxuXHRwcml2YXRlIHN0YXllZCA9IChmb3JjZSA9IGZhbHNlKSA9PiB7XG5cdFx0aWYgKGZvcmNlIHx8IHRoaXMuaGFzU2Nyb2xsZWQgfHwgIXRoaXMuY2FuU2Nyb2xsKSB7XG5cdFx0XHR0aGlzLmRpc3BhdGNoKCk7XG5cdFx0fVxuXHRcdHRoaXMuaGFzU3RheWVkID0gdHJ1ZTtcblx0fTtcblxuXHRwcml2YXRlIGRpc3BhdGNoKCkge1xuXHRcdHdpbmRvdy5kaXNwYXRjaEV2ZW50KHRoaXMuY3VzdG9tRXZlbnQpO1xuXHRcdHRoaXMuZGlzYWJsZSgpO1xuXHR9XG59XG4iLCJpbXBvcnQgSUV2ZW50IGZyb20gXCIuLi9pbnRlZmFjZXMvSUV2ZW50XCI7XG5pbXBvcnQgQVRTRXZlbnQgZnJvbSBcIi4vQVRTRXZlbnRcIjtcblxuZXhwb3J0IGRlZmF1bHQgY2xhc3MgU3VibWl0IGV4dGVuZHMgQVRTRXZlbnQgaW1wbGVtZW50cyBJRXZlbnQge1xuXHRnZXQgdHJpZ2dlcigpOiBzdHJpbmcge1xuXHRcdHJldHVybiBcInN1Ym1pdFwiO1xuXHR9XG5cdGdldCBzb3VyY2UoKTogV2luZG93IHtcblx0XHRyZXR1cm4gd2luZG93O1xuXHR9XG5cdGdldCBuYW1lKCk6IHN0cmluZyB7XG5cdFx0cmV0dXJuIFwiZm9ybV9zdWJtaXR0ZWRcIjtcblx0fVxuXHRnZXQgaGFzVHlwZXMoKTogYm9vbGVhbiB7XG5cdFx0cmV0dXJuIHRydWU7XG5cdH1cblx0Z2V0IHJlZGlyZWN0T25GaW5pc2goKTogYm9vbGVhbiB7XG5cdFx0cmV0dXJuIHRydWU7XG5cdH1cblx0Z2V0IGlzQmxvY2tpbmcoKTogYm9vbGVhbiB7XG5cdFx0cmV0dXJuIHRydWU7XG5cdH1cblx0Z2V0IGFsbG93TXVsdGlwbGUoKTogYm9vbGVhbiB7XG5cdFx0cmV0dXJuIGZhbHNlO1xuXHR9XG5cdGlzVmFsaWQoZXZlbnQ6IEV2ZW50KTogYm9vbGVhbiB7XG5cdFx0aWYgKGV2ZW50Py50YXJnZXQgaW5zdGFuY2VvZiBIVE1MRm9ybUVsZW1lbnQpIHtcblx0XHRcdHJldHVybiB0aGlzLmJhc2ljVmFsaWRhdGlvbihldmVudC50YXJnZXQpO1xuXHRcdH1cblx0XHRyZXR1cm4gZmFsc2U7XG5cdH1cbiAgICBcbn1cbiIsImltcG9ydCBJRXZlbnQgZnJvbSBcIi4uL2ludGVmYWNlcy9JRXZlbnRcIjtcbmltcG9ydCBBVFNFdmVudCBmcm9tIFwiLi9BVFNFdmVudFwiO1xuXG5leHBvcnQgZGVmYXVsdCBjbGFzcyBXZWJjYW0gZXh0ZW5kcyBBVFNFdmVudCBpbXBsZW1lbnRzIElFdmVudCB7XG5cdGdldCB0cmlnZ2VyKCk6IG51bGwge1xuXHRcdHJldHVybiBudWxsO1xuXHR9XG5cdGdldCBzb3VyY2UoKTogbnVsbCB7XG5cdFx0cmV0dXJuIG51bGw7XG5cdH1cblx0Z2V0IG5hbWUoKTogc3RyaW5nIHtcblx0XHRyZXR1cm4gXCJ3ZWJjYW1fYWNjZXB0ZWRcIjtcblx0fVxuXHRnZXQgaGFzVHlwZXMoKTogYm9vbGVhbiB7XG5cdFx0cmV0dXJuIGZhbHNlO1xuXHR9XG5cdGdldCByZWRpcmVjdE9uRmluaXNoKCk6IGJvb2xlYW4ge1xuXHRcdHJldHVybiB0cnVlO1xuXHR9XG5cdGdldCBpc0Jsb2NraW5nKCk6IGJvb2xlYW4ge1xuXHRcdHJldHVybiB0cnVlO1xuXHR9XG5cdGdldCBhbGxvd011bHRpcGxlKCk6IGJvb2xlYW4ge1xuXHRcdHJldHVybiBmYWxzZTtcblx0fVxuXHRpc1ZhbGlkKCk6IGJvb2xlYW4ge1xuXHRcdHJldHVybiB0cnVlO1xuXHR9XG5cbn1cbiIsIi8vLy8vLy8vLy8vLy8vLy8vLy8vLy8vLy8vLy8vLy8vLy8vLy8vLy8vLy8vLy8vLy8vLy8vLy8vLy8vLy8vLy8vLy8vLy8vLy8vLy8vLy8vL1xuLyogVUFQYXJzZXIuanMgdjEuMC40MVxuICAgQ29weXJpZ2h0IMKpIDIwMTItMjAyNSBGYWlzYWwgU2FsbWFuIDxmQGZhaXNhbG1hbi5jb20+XG4gICBNSVQgTGljZW5zZSAqLy8qXG4gICBEZXRlY3QgQnJvd3NlciwgRW5naW5lLCBPUywgQ1BVLCBhbmQgRGV2aWNlIHR5cGUvbW9kZWwgZnJvbSBVc2VyLUFnZW50IGRhdGEuXG4gICBTdXBwb3J0cyBicm93c2VyICYgbm9kZS5qcyBlbnZpcm9ubWVudC4gXG4gICBEZW1vICAgOiBodHRwczovL2ZhaXNhbG1hbi5naXRodWIuaW8vdWEtcGFyc2VyLWpzXG4gICBTb3VyY2UgOiBodHRwczovL2dpdGh1Yi5jb20vZmFpc2FsbWFuL3VhLXBhcnNlci1qcyAqL1xuLy8vLy8vLy8vLy8vLy8vLy8vLy8vLy8vLy8vLy8vLy8vLy8vLy8vLy8vLy8vLy8vLy8vLy8vLy8vLy8vLy8vLy8vLy8vLy8vLy8vLy8vLy8vXG5cbihmdW5jdGlvbiAod2luZG93LCB1bmRlZmluZWQpIHtcblxuICAgICd1c2Ugc3RyaWN0JztcblxuICAgIC8vLy8vLy8vLy8vLy8vXG4gICAgLy8gQ29uc3RhbnRzXG4gICAgLy8vLy8vLy8vLy8vL1xuXG5cbiAgICB2YXIgTElCVkVSU0lPTiAgPSAnMS4wLjQxJyxcbiAgICAgICAgRU1QVFkgICAgICAgPSAnJyxcbiAgICAgICAgVU5LTk9XTiAgICAgPSAnPycsXG4gICAgICAgIEZVTkNfVFlQRSAgID0gJ2Z1bmN0aW9uJyxcbiAgICAgICAgVU5ERUZfVFlQRSAgPSAndW5kZWZpbmVkJyxcbiAgICAgICAgT0JKX1RZUEUgICAgPSAnb2JqZWN0JyxcbiAgICAgICAgU1RSX1RZUEUgICAgPSAnc3RyaW5nJyxcbiAgICAgICAgTUFKT1IgICAgICAgPSAnbWFqb3InLFxuICAgICAgICBNT0RFTCAgICAgICA9ICdtb2RlbCcsXG4gICAgICAgIE5BTUUgICAgICAgID0gJ25hbWUnLFxuICAgICAgICBUWVBFICAgICAgICA9ICd0eXBlJyxcbiAgICAgICAgVkVORE9SICAgICAgPSAndmVuZG9yJyxcbiAgICAgICAgVkVSU0lPTiAgICAgPSAndmVyc2lvbicsXG4gICAgICAgIEFSQ0hJVEVDVFVSRT0gJ2FyY2hpdGVjdHVyZScsXG4gICAgICAgIENPTlNPTEUgICAgID0gJ2NvbnNvbGUnLFxuICAgICAgICBNT0JJTEUgICAgICA9ICdtb2JpbGUnLFxuICAgICAgICBUQUJMRVQgICAgICA9ICd0YWJsZXQnLFxuICAgICAgICBTTUFSVFRWICAgICA9ICdzbWFydHR2JyxcbiAgICAgICAgV0VBUkFCTEUgICAgPSAnd2VhcmFibGUnLFxuICAgICAgICBFTUJFRERFRCAgICA9ICdlbWJlZGRlZCcsXG4gICAgICAgIFVBX01BWF9MRU5HVEggPSA1MDA7XG5cbiAgICB2YXIgQU1BWk9OICA9ICdBbWF6b24nLFxuICAgICAgICBBUFBMRSAgID0gJ0FwcGxlJyxcbiAgICAgICAgQVNVUyAgICA9ICdBU1VTJyxcbiAgICAgICAgQkxBQ0tCRVJSWSA9ICdCbGFja0JlcnJ5JyxcbiAgICAgICAgQlJPV1NFUiA9ICdCcm93c2VyJyxcbiAgICAgICAgQ0hST01FICA9ICdDaHJvbWUnLFxuICAgICAgICBFREdFICAgID0gJ0VkZ2UnLFxuICAgICAgICBGSVJFRk9YID0gJ0ZpcmVmb3gnLFxuICAgICAgICBHT09HTEUgID0gJ0dvb2dsZScsXG4gICAgICAgIEhPTk9SICAgPSAnSG9ub3InLFxuICAgICAgICBIVUFXRUkgID0gJ0h1YXdlaScsXG4gICAgICAgIExFTk9WTyAgPSAnTGVub3ZvJyxcbiAgICAgICAgTEcgICAgICA9ICdMRycsXG4gICAgICAgIE1JQ1JPU09GVCA9ICdNaWNyb3NvZnQnLFxuICAgICAgICBNT1RPUk9MQSAgPSAnTW90b3JvbGEnLFxuICAgICAgICBOVklESUEgID0gJ052aWRpYScsXG4gICAgICAgIE9ORVBMVVMgPSAnT25lUGx1cycsXG4gICAgICAgIE9QRVJBICAgPSAnT3BlcmEnLFxuICAgICAgICBPUFBPICAgID0gJ09QUE8nLFxuICAgICAgICBTQU1TVU5HID0gJ1NhbXN1bmcnLFxuICAgICAgICBTSEFSUCAgID0gJ1NoYXJwJyxcbiAgICAgICAgU09OWSAgICA9ICdTb255JyxcbiAgICAgICAgWElBT01JICA9ICdYaWFvbWknLFxuICAgICAgICBaRUJSQSAgID0gJ1plYnJhJyxcbiAgICAgICAgRkFDRUJPT0sgICAgPSAnRmFjZWJvb2snLFxuICAgICAgICBDSFJPTUlVTV9PUyA9ICdDaHJvbWl1bSBPUycsXG4gICAgICAgIE1BQ19PUyAgPSAnTWFjIE9TJyxcbiAgICAgICAgU1VGRklYX0JST1dTRVIgPSAnIEJyb3dzZXInO1xuXG4gICAgLy8vLy8vLy8vLy9cbiAgICAvLyBIZWxwZXJcbiAgICAvLy8vLy8vLy8vXG5cbiAgICB2YXIgZXh0ZW5kID0gZnVuY3Rpb24gKHJlZ2V4ZXMsIGV4dGVuc2lvbnMpIHtcbiAgICAgICAgICAgIHZhciBtZXJnZWRSZWdleGVzID0ge307XG4gICAgICAgICAgICBmb3IgKHZhciBpIGluIHJlZ2V4ZXMpIHtcbiAgICAgICAgICAgICAgICBpZiAoZXh0ZW5zaW9uc1tpXSAmJiBleHRlbnNpb25zW2ldLmxlbmd0aCAlIDIgPT09IDApIHtcbiAgICAgICAgICAgICAgICAgICAgbWVyZ2VkUmVnZXhlc1tpXSA9IGV4dGVuc2lvbnNbaV0uY29uY2F0KHJlZ2V4ZXNbaV0pO1xuICAgICAgICAgICAgICAgIH0gZWxzZSB7XG4gICAgICAgICAgICAgICAgICAgIG1lcmdlZFJlZ2V4ZXNbaV0gPSByZWdleGVzW2ldO1xuICAgICAgICAgICAgICAgIH1cbiAgICAgICAgICAgIH1cbiAgICAgICAgICAgIHJldHVybiBtZXJnZWRSZWdleGVzO1xuICAgICAgICB9LFxuICAgICAgICBlbnVtZXJpemUgPSBmdW5jdGlvbiAoYXJyKSB7XG4gICAgICAgICAgICB2YXIgZW51bXMgPSB7fTtcbiAgICAgICAgICAgIGZvciAodmFyIGk9MDsgaTxhcnIubGVuZ3RoOyBpKyspIHtcbiAgICAgICAgICAgICAgICBlbnVtc1thcnJbaV0udG9VcHBlckNhc2UoKV0gPSBhcnJbaV07XG4gICAgICAgICAgICB9XG4gICAgICAgICAgICByZXR1cm4gZW51bXM7XG4gICAgICAgIH0sXG4gICAgICAgIGhhcyA9IGZ1bmN0aW9uIChzdHIxLCBzdHIyKSB7XG4gICAgICAgICAgICByZXR1cm4gdHlwZW9mIHN0cjEgPT09IFNUUl9UWVBFID8gbG93ZXJpemUoc3RyMikuaW5kZXhPZihsb3dlcml6ZShzdHIxKSkgIT09IC0xIDogZmFsc2U7XG4gICAgICAgIH0sXG4gICAgICAgIGxvd2VyaXplID0gZnVuY3Rpb24gKHN0cikge1xuICAgICAgICAgICAgcmV0dXJuIHN0ci50b0xvd2VyQ2FzZSgpO1xuICAgICAgICB9LFxuICAgICAgICBtYWpvcml6ZSA9IGZ1bmN0aW9uICh2ZXJzaW9uKSB7XG4gICAgICAgICAgICByZXR1cm4gdHlwZW9mKHZlcnNpb24pID09PSBTVFJfVFlQRSA/IHZlcnNpb24ucmVwbGFjZSgvW15cXGRcXC5dL2csIEVNUFRZKS5zcGxpdCgnLicpWzBdIDogdW5kZWZpbmVkO1xuICAgICAgICB9LFxuICAgICAgICB0cmltID0gZnVuY3Rpb24gKHN0ciwgbGVuKSB7XG4gICAgICAgICAgICBpZiAodHlwZW9mKHN0cikgPT09IFNUUl9UWVBFKSB7XG4gICAgICAgICAgICAgICAgc3RyID0gc3RyLnJlcGxhY2UoL15cXHNcXHMqLywgRU1QVFkpO1xuICAgICAgICAgICAgICAgIHJldHVybiB0eXBlb2YobGVuKSA9PT0gVU5ERUZfVFlQRSA/IHN0ciA6IHN0ci5zdWJzdHJpbmcoMCwgVUFfTUFYX0xFTkdUSCk7XG4gICAgICAgICAgICB9XG4gICAgfTtcblxuICAgIC8vLy8vLy8vLy8vLy8vL1xuICAgIC8vIE1hcCBoZWxwZXJcbiAgICAvLy8vLy8vLy8vLy8vL1xuXG4gICAgdmFyIHJneE1hcHBlciA9IGZ1bmN0aW9uICh1YSwgYXJyYXlzKSB7XG5cbiAgICAgICAgICAgIHZhciBpID0gMCwgaiwgaywgcCwgcSwgbWF0Y2hlcywgbWF0Y2g7XG5cbiAgICAgICAgICAgIC8vIGxvb3AgdGhyb3VnaCBhbGwgcmVnZXhlcyBtYXBzXG4gICAgICAgICAgICB3aGlsZSAoaSA8IGFycmF5cy5sZW5ndGggJiYgIW1hdGNoZXMpIHtcblxuICAgICAgICAgICAgICAgIHZhciByZWdleCA9IGFycmF5c1tpXSwgICAgICAgLy8gZXZlbiBzZXF1ZW5jZSAoMCwyLDQsLi4pXG4gICAgICAgICAgICAgICAgICAgIHByb3BzID0gYXJyYXlzW2kgKyAxXTsgICAvLyBvZGQgc2VxdWVuY2UgKDEsMyw1LC4uKVxuICAgICAgICAgICAgICAgIGogPSBrID0gMDtcblxuICAgICAgICAgICAgICAgIC8vIHRyeSBtYXRjaGluZyB1YXN0cmluZyB3aXRoIHJlZ2V4ZXNcbiAgICAgICAgICAgICAgICB3aGlsZSAoaiA8IHJlZ2V4Lmxlbmd0aCAmJiAhbWF0Y2hlcykge1xuXG4gICAgICAgICAgICAgICAgICAgIGlmICghcmVnZXhbal0pIHsgYnJlYWs7IH1cbiAgICAgICAgICAgICAgICAgICAgbWF0Y2hlcyA9IHJlZ2V4W2orK10uZXhlYyh1YSk7XG5cbiAgICAgICAgICAgICAgICAgICAgaWYgKCEhbWF0Y2hlcykge1xuICAgICAgICAgICAgICAgICAgICAgICAgZm9yIChwID0gMDsgcCA8IHByb3BzLmxlbmd0aDsgcCsrKSB7XG4gICAgICAgICAgICAgICAgICAgICAgICAgICAgbWF0Y2ggPSBtYXRjaGVzWysra107XG4gICAgICAgICAgICAgICAgICAgICAgICAgICAgcSA9IHByb3BzW3BdO1xuICAgICAgICAgICAgICAgICAgICAgICAgICAgIC8vIGNoZWNrIGlmIGdpdmVuIHByb3BlcnR5IGlzIGFjdHVhbGx5IGFycmF5XG4gICAgICAgICAgICAgICAgICAgICAgICAgICAgaWYgKHR5cGVvZiBxID09PSBPQkpfVFlQRSAmJiBxLmxlbmd0aCA+IDApIHtcbiAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgaWYgKHEubGVuZ3RoID09PSAyKSB7XG4gICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICBpZiAodHlwZW9mIHFbMV0gPT0gRlVOQ19UWVBFKSB7XG4gICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgLy8gYXNzaWduIG1vZGlmaWVkIG1hdGNoXG4gICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgdGhpc1txWzBdXSA9IHFbMV0uY2FsbCh0aGlzLCBtYXRjaCk7XG4gICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICB9IGVsc2Uge1xuICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgIC8vIGFzc2lnbiBnaXZlbiB2YWx1ZSwgaWdub3JlIHJlZ2V4IG1hdGNoXG4gICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgdGhpc1txWzBdXSA9IHFbMV07XG4gICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICB9XG4gICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgIH0gZWxzZSBpZiAocS5sZW5ndGggPT09IDMpIHtcbiAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgIC8vIGNoZWNrIHdoZXRoZXIgZnVuY3Rpb24gb3IgcmVnZXhcbiAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgIGlmICh0eXBlb2YgcVsxXSA9PT0gRlVOQ19UWVBFICYmICEocVsxXS5leGVjICYmIHFbMV0udGVzdCkpIHtcbiAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAvLyBjYWxsIGZ1bmN0aW9uICh1c3VhbGx5IHN0cmluZyBtYXBwZXIpXG4gICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgdGhpc1txWzBdXSA9IG1hdGNoID8gcVsxXS5jYWxsKHRoaXMsIG1hdGNoLCBxWzJdKSA6IHVuZGVmaW5lZDtcbiAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgIH0gZWxzZSB7XG4gICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgLy8gc2FuaXRpemUgbWF0Y2ggdXNpbmcgZ2l2ZW4gcmVnZXhcbiAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICB0aGlzW3FbMF1dID0gbWF0Y2ggPyBtYXRjaC5yZXBsYWNlKHFbMV0sIHFbMl0pIDogdW5kZWZpbmVkO1xuICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgfVxuICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICB9IGVsc2UgaWYgKHEubGVuZ3RoID09PSA0KSB7XG4gICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgdGhpc1txWzBdXSA9IG1hdGNoID8gcVszXS5jYWxsKHRoaXMsIG1hdGNoLnJlcGxhY2UocVsxXSwgcVsyXSkpIDogdW5kZWZpbmVkO1xuICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICB9XG4gICAgICAgICAgICAgICAgICAgICAgICAgICAgfSBlbHNlIHtcbiAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgdGhpc1txXSA9IG1hdGNoID8gbWF0Y2ggOiB1bmRlZmluZWQ7XG4gICAgICAgICAgICAgICAgICAgICAgICAgICAgfVxuICAgICAgICAgICAgICAgICAgICAgICAgfVxuICAgICAgICAgICAgICAgICAgICB9XG4gICAgICAgICAgICAgICAgfVxuICAgICAgICAgICAgICAgIGkgKz0gMjtcbiAgICAgICAgICAgIH1cbiAgICAgICAgfSxcblxuICAgICAgICBzdHJNYXBwZXIgPSBmdW5jdGlvbiAoc3RyLCBtYXApIHtcblxuICAgICAgICAgICAgZm9yICh2YXIgaSBpbiBtYXApIHtcbiAgICAgICAgICAgICAgICAvLyBjaGVjayBpZiBjdXJyZW50IHZhbHVlIGlzIGFycmF5XG4gICAgICAgICAgICAgICAgaWYgKHR5cGVvZiBtYXBbaV0gPT09IE9CSl9UWVBFICYmIG1hcFtpXS5sZW5ndGggPiAwKSB7XG4gICAgICAgICAgICAgICAgICAgIGZvciAodmFyIGogPSAwOyBqIDwgbWFwW2ldLmxlbmd0aDsgaisrKSB7XG4gICAgICAgICAgICAgICAgICAgICAgICBpZiAoaGFzKG1hcFtpXVtqXSwgc3RyKSkge1xuICAgICAgICAgICAgICAgICAgICAgICAgICAgIHJldHVybiAoaSA9PT0gVU5LTk9XTikgPyB1bmRlZmluZWQgOiBpO1xuICAgICAgICAgICAgICAgICAgICAgICAgfVxuICAgICAgICAgICAgICAgICAgICB9XG4gICAgICAgICAgICAgICAgfSBlbHNlIGlmIChoYXMobWFwW2ldLCBzdHIpKSB7XG4gICAgICAgICAgICAgICAgICAgIHJldHVybiAoaSA9PT0gVU5LTk9XTikgPyB1bmRlZmluZWQgOiBpO1xuICAgICAgICAgICAgICAgIH1cbiAgICAgICAgICAgIH1cbiAgICAgICAgICAgIHJldHVybiBtYXAuaGFzT3duUHJvcGVydHkoJyonKSA/IG1hcFsnKiddIDogc3RyO1xuICAgIH07XG5cbiAgICAvLy8vLy8vLy8vLy8vLy9cbiAgICAvLyBTdHJpbmcgbWFwXG4gICAgLy8vLy8vLy8vLy8vLy9cblxuICAgIC8vIFNhZmFyaSA8IDMuMFxuICAgIHZhciBvbGRTYWZhcmlNYXAgPSB7XG4gICAgICAgICAgICAnMS4wJyAgIDogJy84JyxcbiAgICAgICAgICAgICcxLjInICAgOiAnLzEnLFxuICAgICAgICAgICAgJzEuMycgICA6ICcvMycsXG4gICAgICAgICAgICAnMi4wJyAgIDogJy80MTInLFxuICAgICAgICAgICAgJzIuMC4yJyA6ICcvNDE2JyxcbiAgICAgICAgICAgICcyLjAuMycgOiAnLzQxNycsXG4gICAgICAgICAgICAnMi4wLjQnIDogJy80MTknLFxuICAgICAgICAgICAgJz8nICAgICA6ICcvJ1xuICAgICAgICB9LFxuICAgICAgICB3aW5kb3dzVmVyc2lvbk1hcCA9IHtcbiAgICAgICAgICAgICdNRScgICAgICAgIDogJzQuOTAnLFxuICAgICAgICAgICAgJ05UIDMuMTEnICAgOiAnTlQzLjUxJyxcbiAgICAgICAgICAgICdOVCA0LjAnICAgIDogJ05UNC4wJyxcbiAgICAgICAgICAgICcyMDAwJyAgICAgIDogJ05UIDUuMCcsXG4gICAgICAgICAgICAnWFAnICAgICAgICA6IFsnTlQgNS4xJywgJ05UIDUuMiddLFxuICAgICAgICAgICAgJ1Zpc3RhJyAgICAgOiAnTlQgNi4wJyxcbiAgICAgICAgICAgICc3JyAgICAgICAgIDogJ05UIDYuMScsXG4gICAgICAgICAgICAnOCcgICAgICAgICA6ICdOVCA2LjInLFxuICAgICAgICAgICAgJzguMScgICAgICAgOiAnTlQgNi4zJyxcbiAgICAgICAgICAgICcxMCcgICAgICAgIDogWydOVCA2LjQnLCAnTlQgMTAuMCddLFxuICAgICAgICAgICAgJ1JUJyAgICAgICAgOiAnQVJNJ1xuICAgIH07XG5cbiAgICAvLy8vLy8vLy8vLy8vL1xuICAgIC8vIFJlZ2V4IG1hcFxuICAgIC8vLy8vLy8vLy8vLy9cblxuICAgIHZhciByZWdleGVzID0ge1xuXG4gICAgICAgIGJyb3dzZXIgOiBbW1xuXG4gICAgICAgICAgICAvXFxiKD86Y3Jtb3xjcmlvcylcXC8oW1xcd1xcLl0rKS9pICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAvLyBDaHJvbWUgZm9yIEFuZHJvaWQvaU9TXG4gICAgICAgICAgICBdLCBbVkVSU0lPTiwgW05BTUUsICdDaHJvbWUnXV0sIFtcbiAgICAgICAgICAgIC9lZGcoPzplfGlvc3xhKT9cXC8oW1xcd1xcLl0rKS9pICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgLy8gTWljcm9zb2Z0IEVkZ2VcbiAgICAgICAgICAgIF0sIFtWRVJTSU9OLCBbTkFNRSwgJ0VkZ2UnXV0sIFtcblxuICAgICAgICAgICAgLy8gUHJlc3RvIGJhc2VkXG4gICAgICAgICAgICAvKG9wZXJhIG1pbmkpXFwvKFstXFx3XFwuXSspL2ksICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgIC8vIE9wZXJhIE1pbmlcbiAgICAgICAgICAgIC8ob3BlcmEgW21vYmlsZXRhYl17Myw2fSlcXGIuK3ZlcnNpb25cXC8oWy1cXHdcXC5dKykvaSwgICAgICAgICAgICAgICAgIC8vIE9wZXJhIE1vYmkvVGFibGV0XG4gICAgICAgICAgICAvKG9wZXJhKSg/Oi4rdmVyc2lvblxcL3xbXFwvIF0rKShbXFx3XFwuXSspL2kgICAgICAgICAgICAgICAgICAgICAgICAgICAvLyBPcGVyYVxuICAgICAgICAgICAgXSwgW05BTUUsIFZFUlNJT05dLCBbXG4gICAgICAgICAgICAvb3Bpb3NbXFwvIF0rKFtcXHdcXC5dKykvaSAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgIC8vIE9wZXJhIG1pbmkgb24gaXBob25lID49IDguMFxuICAgICAgICAgICAgXSwgW1ZFUlNJT04sIFtOQU1FLCBPUEVSQSsnIE1pbmknXV0sIFtcbiAgICAgICAgICAgIC9cXGJvcCg/OnJnKT94XFwvKFtcXHdcXC5dKykvaSAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgIC8vIE9wZXJhIEdYXG4gICAgICAgICAgICBdLCBbVkVSU0lPTiwgW05BTUUsIE9QRVJBKycgR1gnXV0sIFtcbiAgICAgICAgICAgIC9cXGJvcHJcXC8oW1xcd1xcLl0rKS9pICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgIC8vIE9wZXJhIFdlYmtpdFxuICAgICAgICAgICAgXSwgW1ZFUlNJT04sIFtOQU1FLCBPUEVSQV1dLCBbXG5cbiAgICAgICAgICAgIC8vIE1peGVkXG4gICAgICAgICAgICAvXFxiYlthaV0qZCg/OnVoZHxbdWJdKlthZWtvcHJzd3hdezUsNn0pW1xcLyBdPyhbXFx3XFwuXSspL2kgICAgICAgICAgICAvLyBCYWlkdVxuICAgICAgICAgICAgXSwgW1ZFUlNJT04sIFtOQU1FLCAnQmFpZHUnXV0sIFtcbiAgICAgICAgICAgIC9cXGIoPzpteGJyb3dzZXJ8bXhpb3N8bXlpZTIpXFwvPyhbLVxcd1xcLl0qKVxcYi9pICAgICAgICAgICAgICAgICAgICAgICAvLyBNYXh0aG9uXG4gICAgICAgICAgICBdLCBbVkVSU0lPTiwgW05BTUUsICdNYXh0aG9uJ11dLCBbXG4gICAgICAgICAgICAvKGtpbmRsZSlcXC8oW1xcd1xcLl0rKS9pLCAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgIC8vIEtpbmRsZVxuICAgICAgICAgICAgLyhsdW5hc2NhcGV8bWF4dGhvbnxuZXRmcm9udHxqYXNtaW5lfGJsYXplcnxzbGVpcG5pcilbXFwvIF0/KFtcXHdcXC5dKikvaSwgICAgICBcbiAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgLy8gTHVuYXNjYXBlL01heHRob24vTmV0ZnJvbnQvSmFzbWluZS9CbGF6ZXIvU2xlaXBuaXJcbiAgICAgICAgICAgIC8vIFRyaWRlbnQgYmFzZWRcbiAgICAgICAgICAgIC8oYXZhbnR8aWVtb2JpbGV8c2xpbSg/OmJyb3dzZXJ8Ym9hdHxqZXQpKVtcXC8gXT8oW1xcZFxcLl0qKS9pLCAgICAgICAgLy8gQXZhbnQvSUVNb2JpbGUvU2xpbUJyb3dzZXIvU2xpbUJvYXQvU2xpbWpldFxuICAgICAgICAgICAgLyg/Om1zfFxcKCkoaWUpIChbXFx3XFwuXSspL2ksICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAvLyBJbnRlcm5ldCBFeHBsb3JlclxuXG4gICAgICAgICAgICAvLyBCbGluay9XZWJraXQvS0hUTUwgYmFzZWQgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgIC8vIEZsb2NrL1JvY2tNZWx0L01pZG9yaS9FcGlwaGFueS9TaWxrL1NreWZpcmUvQm9sdC9Jcm9uL0lyaWRpdW0vUGhhbnRvbUpTL0Jvd3Nlci9RdXBaaWxsYS9GYWxrb25cbiAgICAgICAgICAgIC8oZmxvY2t8cm9ja21lbHR8bWlkb3JpfGVwaXBoYW55fHNpbGt8c2t5ZmlyZXxvdmlicm93c2VyfGJvbHR8aXJvbnx2aXZhbGRpfGlyaWRpdW18cGhhbnRvbWpzfGJvd3NlcnxxdXB6aWxsYXxmYWxrb258cmVrb25xfHB1ZmZpbnxicmF2ZXx3aGFsZSg/IS4rbmF2ZXIpfHFxYnJvd3NlcmxpdGV8ZHVja2R1Y2tnb3xrbGFyfGhlbGlvfCg/PWNvbW9kb18pP2RyYWdvbilcXC8oWy1cXHdcXC5dKykvaSxcbiAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgLy8gUmVrb25xL1B1ZmZpbi9CcmF2ZS9XaGFsZS9RUUJyb3dzZXJMaXRlL1FRLy9WaXZhbGRpL0R1Y2tEdWNrR28vS2xhci9IZWxpby9EcmFnb25cbiAgICAgICAgICAgIC8oaGV5dGFwfG92aXwxMTUpYnJvd3NlclxcLyhbXFxkXFwuXSspL2ksICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgLy8gSGV5VGFwL092aS8xMTVcbiAgICAgICAgICAgIC8od2VpYm8pX18oW1xcZFxcLl0rKS9pICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAvLyBXZWlib1xuICAgICAgICAgICAgXSwgW05BTUUsIFZFUlNJT05dLCBbXG4gICAgICAgICAgICAvcXVhcmsoPzpwYyk/XFwvKFstXFx3XFwuXSspL2kgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgIC8vIFF1YXJrXG4gICAgICAgICAgICBdLCBbVkVSU0lPTiwgW05BTUUsICdRdWFyayddXSwgW1xuICAgICAgICAgICAgL1xcYmRkZ1xcLyhbXFx3XFwuXSspL2kgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgLy8gRHVja0R1Y2tHb1xuICAgICAgICAgICAgXSwgW1ZFUlNJT04sIFtOQU1FLCAnRHVja0R1Y2tHbyddXSwgW1xuICAgICAgICAgICAgLyg/OlxcYnVjPyA/YnJvd3NlcnwoPzpqdWMuKyl1Y3dlYilbXFwvIF0/KFtcXHdcXC5dKykvaSAgICAgICAgICAgICAgICAgLy8gVUNCcm93c2VyXG4gICAgICAgICAgICBdLCBbVkVSU0lPTiwgW05BTUUsICdVQycrQlJPV1NFUl1dLCBbXG4gICAgICAgICAgICAvbWljcm9tLitcXGJxYmNvcmVcXC8oW1xcd1xcLl0rKS9pLCAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAvLyBXZUNoYXQgRGVza3RvcCBmb3IgV2luZG93cyBCdWlsdC1pbiBCcm93c2VyXG4gICAgICAgICAgICAvXFxicWJjb3JlXFwvKFtcXHdcXC5dKykuK21pY3JvbS9pLFxuICAgICAgICAgICAgL21pY3JvbWVzc2VuZ2VyXFwvKFtcXHdcXC5dKykvaSAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAvLyBXZUNoYXRcbiAgICAgICAgICAgIF0sIFtWRVJTSU9OLCBbTkFNRSwgJ1dlQ2hhdCddXSwgW1xuICAgICAgICAgICAgL2tvbnF1ZXJvclxcLyhbXFx3XFwuXSspL2kgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAvLyBLb25xdWVyb3JcbiAgICAgICAgICAgIF0sIFtWRVJTSU9OLCBbTkFNRSwgJ0tvbnF1ZXJvciddXSwgW1xuICAgICAgICAgICAgL3RyaWRlbnQuK3J2WzogXShbXFx3XFwuXXsxLDl9KVxcYi4rbGlrZSBnZWNrby9pICAgICAgICAgICAgICAgICAgICAgICAvLyBJRTExXG4gICAgICAgICAgICBdLCBbVkVSU0lPTiwgW05BTUUsICdJRSddXSwgW1xuICAgICAgICAgICAgL3lhKD86c2VhcmNoKT9icm93c2VyXFwvKFtcXHdcXC5dKykvaSAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAvLyBZYW5kZXhcbiAgICAgICAgICAgIF0sIFtWRVJTSU9OLCBbTkFNRSwgJ1lhbmRleCddXSwgW1xuICAgICAgICAgICAgL3NsYnJvd3NlclxcLyhbXFx3XFwuXSspL2kgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAvLyBTbWFydCBMZW5vdm8gQnJvd3NlclxuICAgICAgICAgICAgXSwgW1ZFUlNJT04sIFtOQU1FLCAnU21hcnQgTGVub3ZvICcrQlJPV1NFUl1dLCBbXG4gICAgICAgICAgICAvKGF2YXN0fGF2ZylcXC8oW1xcd1xcLl0rKS9pICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgIC8vIEF2YXN0L0FWRyBTZWN1cmUgQnJvd3NlclxuICAgICAgICAgICAgXSwgW1tOQU1FLCAvKC4rKS8sICckMSBTZWN1cmUgJytCUk9XU0VSXSwgVkVSU0lPTl0sIFtcbiAgICAgICAgICAgIC9cXGJmb2N1c1xcLyhbXFx3XFwuXSspL2kgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgIC8vIEZpcmVmb3ggRm9jdXNcbiAgICAgICAgICAgIF0sIFtWRVJTSU9OLCBbTkFNRSwgRklSRUZPWCsnIEZvY3VzJ11dLCBbXG4gICAgICAgICAgICAvXFxib3B0XFwvKFtcXHdcXC5dKykvaSAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAvLyBPcGVyYSBUb3VjaFxuICAgICAgICAgICAgXSwgW1ZFUlNJT04sIFtOQU1FLCBPUEVSQSsnIFRvdWNoJ11dLCBbXG4gICAgICAgICAgICAvY29jX2NvY1xcdytcXC8oW1xcd1xcLl0rKS9pICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAvLyBDb2MgQ29jIEJyb3dzZXJcbiAgICAgICAgICAgIF0sIFtWRVJTSU9OLCBbTkFNRSwgJ0NvYyBDb2MnXV0sIFtcbiAgICAgICAgICAgIC9kb2xmaW5cXC8oW1xcd1xcLl0rKS9pICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgLy8gRG9scGhpblxuICAgICAgICAgICAgXSwgW1ZFUlNJT04sIFtOQU1FLCAnRG9scGhpbiddXSwgW1xuICAgICAgICAgICAgL2NvYXN0XFwvKFtcXHdcXC5dKykvaSAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAvLyBPcGVyYSBDb2FzdFxuICAgICAgICAgICAgXSwgW1ZFUlNJT04sIFtOQU1FLCBPUEVSQSsnIENvYXN0J11dLCBbXG4gICAgICAgICAgICAvbWl1aWJyb3dzZXJcXC8oW1xcd1xcLl0rKS9pICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgIC8vIE1JVUkgQnJvd3NlclxuICAgICAgICAgICAgXSwgW1ZFUlNJT04sIFtOQU1FLCAnTUlVSScgKyBTVUZGSVhfQlJPV1NFUl1dLCBbXG4gICAgICAgICAgICAvZnhpb3NcXC8oW1xcd1xcLi1dKykvaSAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgIC8vIEZpcmVmb3ggZm9yIGlPU1xuICAgICAgICAgICAgXSwgW1ZFUlNJT04sIFtOQU1FLCBGSVJFRk9YXV0sIFtcbiAgICAgICAgICAgIC9cXGJxaWhvb2Jyb3dzZXJcXC8/KFtcXHdcXC5dKikvaSAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgIC8vIDM2MFxuICAgICAgICAgICAgXSwgW1ZFUlNJT04sIFtOQU1FLCAnMzYwJ11dLCBbXG4gICAgICAgICAgICAvXFxiKHFxKVxcLyhbXFx3XFwuXSspL2kgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAvLyBRUVxuICAgICAgICAgICAgXSwgW1tOQU1FLCAvKC4rKS8sICckMUJyb3dzZXInXSwgVkVSU0lPTl0sIFtcbiAgICAgICAgICAgIC8ob2N1bHVzfHNhaWxmaXNofGh1YXdlaXx2aXZvfHBpY28pYnJvd3NlclxcLyhbXFx3XFwuXSspL2lcbiAgICAgICAgICAgIF0sIFtbTkFNRSwgLyguKykvLCAnJDEnICsgU1VGRklYX0JST1dTRVJdLCBWRVJTSU9OXSwgWyAgICAgICAgICAgICAgLy8gT2N1bHVzL1NhaWxmaXNoL0h1YXdlaUJyb3dzZXIvVml2b0Jyb3dzZXIvUGljb0Jyb3dzZXJcbiAgICAgICAgICAgIC9zYW1zdW5nYnJvd3NlclxcLyhbXFx3XFwuXSspL2kgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgLy8gU2Ftc3VuZyBJbnRlcm5ldFxuICAgICAgICAgICAgXSwgW1ZFUlNJT04sIFtOQU1FLCBTQU1TVU5HICsgJyBJbnRlcm5ldCddXSwgW1xuICAgICAgICAgICAgL21ldGFzcltcXC8gXT8oW1xcZFxcLl0rKS9pICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAvLyBTb2dvdSBFeHBsb3JlclxuICAgICAgICAgICAgXSwgW1ZFUlNJT04sIFtOQU1FLCAnU29nb3UgRXhwbG9yZXInXV0sIFtcbiAgICAgICAgICAgIC8oc29nb3UpbW9cXHcrXFwvKFtcXGRcXC5dKykvaSAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgIC8vIFNvZ291IE1vYmlsZVxuICAgICAgICAgICAgXSwgW1tOQU1FLCAnU29nb3UgTW9iaWxlJ10sIFZFUlNJT05dLCBbXG4gICAgICAgICAgICAvKGVsZWN0cm9uKVxcLyhbXFx3XFwuXSspIHNhZmFyaS9pLCAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgIC8vIEVsZWN0cm9uLWJhc2VkIEFwcFxuICAgICAgICAgICAgLyh0ZXNsYSkoPzogcXRjYXJicm93c2VyfFxcLygyMFxcZFxcZFxcLlstXFx3XFwuXSspKS9pLCAgICAgICAgICAgICAgICAgICAvLyBUZXNsYVxuICAgICAgICAgICAgL20/KHFxYnJvd3NlcnwyMzQ1KD89YnJvd3NlcnxjaHJvbWV8ZXhwbG9yZXIpKVxcdypbXFwvIF0/dj8oW1xcd1xcLl0rKS9pICAgLy8gUVEvMjM0NVxuICAgICAgICAgICAgXSwgW05BTUUsIFZFUlNJT05dLCBbXG4gICAgICAgICAgICAvKGxiYnJvd3NlcnxyZWtvbnEpL2ksICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgIC8vIExpZUJhbyBCcm93c2VyL1Jla29ucVxuICAgICAgICAgICAgL1xcWyhsaW5rZWRpbilhcHBcXF0vaSAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgIC8vIExpbmtlZEluIEFwcCBmb3IgaU9TICYgQW5kcm9pZFxuICAgICAgICAgICAgXSwgW05BTUVdLCBbXG4gICAgICAgICAgICAvb21lXFwvKFtcXHdcXC5dKykgXFx3KiA/KGlyb24pIHNhZi9pLCAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAvLyBJcm9uXG4gICAgICAgICAgICAvb21lXFwvKFtcXHdcXC5dKykuK3FpaHUgKDM2MClbZXNdZS9pICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgIC8vIDM2MFxuICAgICAgICAgICAgXSwgW1ZFUlNJT04sIE5BTUVdLCBbXG5cbiAgICAgICAgICAgIC8vIFdlYlZpZXdcbiAgICAgICAgICAgIC8oKD86ZmJhblxcL2ZiaW9zfGZiX2lhYlxcL2ZiNGEpKD8hLitmYmF2KXw7ZmJhdlxcLyhbXFx3XFwuXSspOykvaSAgICAgICAvLyBGYWNlYm9vayBBcHAgZm9yIGlPUyAmIEFuZHJvaWRcbiAgICAgICAgICAgIF0sIFtbTkFNRSwgRkFDRUJPT0tdLCBWRVJTSU9OXSwgW1xuICAgICAgICAgICAgLyhLbGFybmEpXFwvKFtcXHdcXC5dKykvaSwgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAvLyBLbGFybmEgU2hvcHBpbmcgQnJvd3NlciBmb3IgaU9TICYgQW5kcm9pZFxuICAgICAgICAgICAgLyhrYWthbyg/OnRhbGt8c3RvcnkpKVtcXC8gXShbXFx3XFwuXSspL2ksICAgICAgICAgICAgICAgICAgICAgICAgICAgICAvLyBLYWthbyBBcHBcbiAgICAgICAgICAgIC8obmF2ZXIpXFwoLio/KFxcZCtcXC5bXFx3XFwuXSspLipcXCkvaSwgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgLy8gTmF2ZXIgSW5BcHBcbiAgICAgICAgICAgIC8oZGF1bSlhcHBzW1xcLyBdKFtcXHdcXC5dKykvaSwgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgLy8gRGF1bSBBcHBcbiAgICAgICAgICAgIC9zYWZhcmkgKGxpbmUpXFwvKFtcXHdcXC5dKykvaSwgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgLy8gTGluZSBBcHAgZm9yIGlPU1xuICAgICAgICAgICAgL1xcYihsaW5lKVxcLyhbXFx3XFwuXSspXFwvaWFiL2ksICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgIC8vIExpbmUgQXBwIGZvciBBbmRyb2lkXG4gICAgICAgICAgICAvKGFsaXBheSljbGllbnRcXC8oW1xcd1xcLl0rKS9pLCAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgIC8vIEFsaXBheVxuICAgICAgICAgICAgLyh0d2l0dGVyKSg/OmFuZHwgZi4rZVxcLyhbXFx3XFwuXSspKS9pLCAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAvLyBUd2l0dGVyXG4gICAgICAgICAgICAvKGNocm9taXVtfGluc3RhZ3JhbXxzbmFwY2hhdClbXFwvIF0oWy1cXHdcXC5dKykvaSAgICAgICAgICAgICAgICAgICAgIC8vIENocm9taXVtL0luc3RhZ3JhbS9TbmFwY2hhdFxuICAgICAgICAgICAgXSwgW05BTUUsIFZFUlNJT05dLCBbXG4gICAgICAgICAgICAvXFxiZ3NhXFwvKFtcXHdcXC5dKykgLipzYWZhcmlcXC8vaSAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgLy8gR29vZ2xlIFNlYXJjaCBBcHBsaWFuY2Ugb24gaU9TXG4gICAgICAgICAgICBdLCBbVkVSU0lPTiwgW05BTUUsICdHU0EnXV0sIFtcbiAgICAgICAgICAgIC9tdXNpY2FsX2x5KD86LithcHBfP3ZlcnNpb25cXC98XykoW1xcd1xcLl0rKS9pICAgICAgICAgICAgICAgICAgICAgICAgLy8gVGlrVG9rXG4gICAgICAgICAgICBdLCBbVkVSU0lPTiwgW05BTUUsICdUaWtUb2snXV0sIFtcblxuICAgICAgICAgICAgL2hlYWRsZXNzY2hyb21lKD86XFwvKFtcXHdcXC5dKyl8ICkvaSAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAvLyBDaHJvbWUgSGVhZGxlc3NcbiAgICAgICAgICAgIF0sIFtWRVJTSU9OLCBbTkFNRSwgQ0hST01FKycgSGVhZGxlc3MnXV0sIFtcblxuICAgICAgICAgICAgLyB3dlxcKS4rKGNocm9tZSlcXC8oW1xcd1xcLl0rKS9pICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgLy8gQ2hyb21lIFdlYlZpZXdcbiAgICAgICAgICAgIF0sIFtbTkFNRSwgQ0hST01FKycgV2ViVmlldyddLCBWRVJTSU9OXSwgW1xuXG4gICAgICAgICAgICAvZHJvaWQuKyB2ZXJzaW9uXFwvKFtcXHdcXC5dKylcXGIuKyg/Om1vYmlsZSBzYWZhcml8c2FmYXJpKS9pICAgICAgICAgICAvLyBBbmRyb2lkIEJyb3dzZXJcbiAgICAgICAgICAgIF0sIFtWRVJTSU9OLCBbTkFNRSwgJ0FuZHJvaWQgJytCUk9XU0VSXV0sIFtcblxuICAgICAgICAgICAgLyhjaHJvbWV8b21uaXdlYnxhcm9yYXxbdGl6ZW5va2FdezV9ID9icm93c2VyKVxcL3Y/KFtcXHdcXC5dKykvaSAgICAgICAvLyBDaHJvbWUvT21uaVdlYi9Bcm9yYS9UaXplbi9Ob2tpYVxuICAgICAgICAgICAgXSwgW05BTUUsIFZFUlNJT05dLCBbXG5cbiAgICAgICAgICAgIC92ZXJzaW9uXFwvKFtcXHdcXC5cXCxdKykgLiptb2JpbGVcXC9cXHcrIChzYWZhcmkpL2kgICAgICAgICAgICAgICAgICAgICAgLy8gTW9iaWxlIFNhZmFyaVxuICAgICAgICAgICAgXSwgW1ZFUlNJT04sIFtOQU1FLCAnTW9iaWxlIFNhZmFyaSddXSwgW1xuICAgICAgICAgICAgL3ZlcnNpb25cXC8oW1xcdyhcXC58XFwsKV0rKSAuKihtb2JpbGUgP3NhZmFyaXxzYWZhcmkpL2kgICAgICAgICAgICAgICAgLy8gU2FmYXJpICYgU2FmYXJpIE1vYmlsZVxuICAgICAgICAgICAgXSwgW1ZFUlNJT04sIE5BTUVdLCBbXG4gICAgICAgICAgICAvd2Via2l0Lis/KG1vYmlsZSA/c2FmYXJpfHNhZmFyaSkoXFwvW1xcd1xcLl0rKS9pICAgICAgICAgICAgICAgICAgICAgIC8vIFNhZmFyaSA8IDMuMFxuICAgICAgICAgICAgXSwgW05BTUUsIFtWRVJTSU9OLCBzdHJNYXBwZXIsIG9sZFNhZmFyaU1hcF1dLCBbXG5cbiAgICAgICAgICAgIC8od2Via2l0fGtodG1sKVxcLyhbXFx3XFwuXSspL2lcbiAgICAgICAgICAgIF0sIFtOQU1FLCBWRVJTSU9OXSwgW1xuXG4gICAgICAgICAgICAvLyBHZWNrbyBiYXNlZFxuICAgICAgICAgICAgLyhuYXZpZ2F0b3J8bmV0c2NhcGVcXGQ/KVxcLyhbLVxcd1xcLl0rKS9pICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgLy8gTmV0c2NhcGVcbiAgICAgICAgICAgIF0sIFtbTkFNRSwgJ05ldHNjYXBlJ10sIFZFUlNJT05dLCBbXG4gICAgICAgICAgICAvKHdvbHZpY3xsaWJyZXdvbGYpXFwvKFtcXHdcXC5dKykvaSAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgIC8vIFdvbHZpYy9MaWJyZVdvbGZcbiAgICAgICAgICAgIF0sIFtOQU1FLCBWRVJTSU9OXSwgW1xuICAgICAgICAgICAgL21vYmlsZSB2cjsgcnY6KFtcXHdcXC5dKylcXCkuK2ZpcmVmb3gvaSAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAvLyBGaXJlZm94IFJlYWxpdHlcbiAgICAgICAgICAgIF0sIFtWRVJTSU9OLCBbTkFNRSwgRklSRUZPWCsnIFJlYWxpdHknXV0sIFtcbiAgICAgICAgICAgIC9la2lvaGYuKyhmbG93KVxcLyhbXFx3XFwuXSspL2ksICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgLy8gRmxvd1xuICAgICAgICAgICAgLyhzd2lmdGZveCkvaSwgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAvLyBTd2lmdGZveFxuICAgICAgICAgICAgLyhpY2VkcmFnb258aWNld2Vhc2VsfGNhbWlub3xjaGltZXJhfGZlbm5lY3xtYWVtbyBicm93c2VyfG1pbmltb3xjb25rZXJvcilbXFwvIF0/KFtcXHdcXC5cXCtdKykvaSxcbiAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgLy8gSWNlRHJhZ29uL0ljZXdlYXNlbC9DYW1pbm8vQ2hpbWVyYS9GZW5uZWMvTWFlbW8vTWluaW1vL0Nvbmtlcm9yXG4gICAgICAgICAgICAvKHNlYW1vbmtleXxrLW1lbGVvbnxpY2VjYXR8aWNlYXBlfGZpcmViaXJkfHBob2VuaXh8cGFsZW1vb258YmFzaWxpc2t8d2F0ZXJmb3gpXFwvKFstXFx3XFwuXSspJC9pLFxuICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAvLyBGaXJlZm94L1NlYU1vbmtleS9LLU1lbGVvbi9JY2VDYXQvSWNlQXBlL0ZpcmViaXJkL1Bob2VuaXhcbiAgICAgICAgICAgIC8oZmlyZWZveClcXC8oW1xcd1xcLl0rKS9pLCAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgLy8gT3RoZXIgRmlyZWZveC1iYXNlZFxuICAgICAgICAgICAgLyhtb3ppbGxhKVxcLyhbXFx3XFwuXSspIC4rcnZcXDouK2dlY2tvXFwvXFxkKy9pLCAgICAgICAgICAgICAgICAgICAgICAgICAvLyBNb3ppbGxhXG5cbiAgICAgICAgICAgIC8vIE90aGVyXG4gICAgICAgICAgICAvKGFtYXlhfGRpbGxvfGRvcmlzfGljYWJ8bGFkeWJpcmR8bHlueHxtb3NhaWN8bmV0c3VyZnxvYmlnb3xwb2xhcmlzfHczbXwoPzpnb3xpY2V8dXApW1xcLiBdP2Jyb3dzZXIpWy1cXC8gXT92PyhbXFx3XFwuXSspL2ksXG4gICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgIC8vIFBvbGFyaXMvTHlueC9EaWxsby9pQ2FiL0RvcmlzL0FtYXlhL3czbS9OZXRTdXJmL09iaWdvL01vc2FpYy9Hby9JQ0UvVVAuQnJvd3Nlci9MYWR5YmlyZFxuICAgICAgICAgICAgL1xcYihsaW5rcykgXFwoKFtcXHdcXC5dKykvaSAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgLy8gTGlua3NcbiAgICAgICAgICAgIF0sIFtOQU1FLCBbVkVSU0lPTiwgL18vZywgJy4nXV0sIFtcbiAgICAgICAgICAgIFxuICAgICAgICAgICAgLyhjb2JhbHQpXFwvKFtcXHdcXC5dKykvaSAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAvLyBDb2JhbHRcbiAgICAgICAgICAgIF0sIFtOQU1FLCBbVkVSU0lPTiwgL21hc3Rlci58bHRzLi8sIFwiXCJdXVxuICAgICAgICBdLFxuXG4gICAgICAgIGNwdSA6IFtbXG5cbiAgICAgICAgICAgIC9cXGIoKGFtZHx4fHg4NlstX10/fHdvd3x3aW4pNjQpXFxiL2kgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAvLyBBTUQ2NCAoeDY0KVxuICAgICAgICAgICAgXSwgW1tBUkNISVRFQ1RVUkUsICdhbWQ2NCddXSwgW1xuXG4gICAgICAgICAgICAvKGlhMzIoPz07KSkvaSwgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgIC8vIElBMzIgKHF1aWNrdGltZSlcbiAgICAgICAgICAgIC9cXGIoKGlbMzQ2XXx4KTg2KShwYyk/XFxiL2kgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAvLyBJQTMyICh4ODYpXG4gICAgICAgICAgICBdLCBbW0FSQ0hJVEVDVFVSRSwgJ2lhMzInXV0sIFtcblxuICAgICAgICAgICAgL1xcYihhYXJjaDY0fGFybSh2P1s4OV1lP2w/fF8/NjQpKVxcYi9pICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgIC8vIEFSTTY0XG4gICAgICAgICAgICBdLCBbW0FSQ0hJVEVDVFVSRSwgJ2FybTY0J11dLCBbXG5cbiAgICAgICAgICAgIC9cXGIoYXJtKHZbNjddKT9odD9uP1tmbF1wPylcXGIvaSAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAvLyBBUk1IRlxuICAgICAgICAgICAgXSwgW1tBUkNISVRFQ1RVUkUsICdhcm1oZiddXSwgW1xuXG4gICAgICAgICAgICAvLyBQb2NrZXRQQyBtaXN0YWtlbmx5IGlkZW50aWZpZWQgYXMgUG93ZXJQQ1xuICAgICAgICAgICAgLyggKGNlfG1vYmlsZSk7IHBwYzt8XFwvW1xcd1xcLl0rYXJtXFxiKS9pXG4gICAgICAgICAgICBdLCBbW0FSQ0hJVEVDVFVSRSwgJ2FybSddXSwgW1xuXG4gICAgICAgICAgICAvKChwcGN8cG93ZXJwYykoNjQpPykoIG1hY3w7fFxcKSkvaSAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAvLyBQb3dlclBDXG4gICAgICAgICAgICBdLCBbW0FSQ0hJVEVDVFVSRSwgL293ZXIvLCBFTVBUWSwgbG93ZXJpemVdXSwgW1xuXG4gICAgICAgICAgICAvIHN1bjRcXHdbO1xcKV0vaSAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgLy8gU1BBUkNcbiAgICAgICAgICAgIF0sIFtbQVJDSElURUNUVVJFLCAnc3BhcmMnXV0sIFtcblxuICAgICAgICAgICAgL1xcYihhdnIzMnxpYTY0KD89Oyl8NjhrKD89XFwpKXxcXGJhcm0oPz12KFsxLTddfFs1LTddMSlsP3w7fGVhYmkpfChpcml4fG1pcHN8c3BhcmMpKDY0KT9cXGJ8cGEtcmlzYykvaVxuICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAvLyBJQTY0LCA2OEssIEFSTS82NCwgQVZSLzMyLCBJUklYLzY0LCBNSVBTLzY0LCBTUEFSQy82NCwgUEEtUklTQ1xuICAgICAgICAgICAgXSwgW1tBUkNISVRFQ1RVUkUsIGxvd2VyaXplXV1cbiAgICAgICAgXSxcblxuICAgICAgICBkZXZpY2UgOiBbW1xuXG4gICAgICAgICAgICAvLy8vLy8vLy8vLy8vLy8vLy8vLy8vLy8vL1xuICAgICAgICAgICAgLy8gTU9CSUxFUyAmIFRBQkxFVFNcbiAgICAgICAgICAgIC8vLy8vLy8vLy8vLy8vLy8vLy8vLy8vLy9cblxuICAgICAgICAgICAgLy8gU2Ftc3VuZ1xuICAgICAgICAgICAgL1xcYihzY2gtaVs4OV0wXFxkfHNody1tMzgwc3xzbS1bcHR4XVxcd3syLDR9fGd0LVtwbl1cXGR7Miw0fXxzZ2gtdDhbNTZdOXxuZXh1cyAxMCkvaVxuICAgICAgICAgICAgXSwgW01PREVMLCBbVkVORE9SLCBTQU1TVU5HXSwgW1RZUEUsIFRBQkxFVF1dLCBbXG4gICAgICAgICAgICAvXFxiKCg/OnNbY2dwXWh8Z3R8c20pLSg/IVtscl0pXFx3K3xzY1tnLV0/W1xcZF0rYT98Z2FsYXh5IG5leHVzKS9pLFxuICAgICAgICAgICAgL3NhbXN1bmdbLSBdKCg/IXNtLVtscl0pWy1cXHddKykvaSxcbiAgICAgICAgICAgIC9zZWMtKHNnaFxcdyspL2lcbiAgICAgICAgICAgIF0sIFtNT0RFTCwgW1ZFTkRPUiwgU0FNU1VOR10sIFtUWVBFLCBNT0JJTEVdXSwgW1xuXG4gICAgICAgICAgICAvLyBBcHBsZVxuICAgICAgICAgICAgLyg/OlxcL3xcXCgpKGlwKD86aG9uZXxvZClbXFx3LCBdKikoPzpcXC98OykvaSAgICAgICAgICAgICAgICAgICAgICAgICAgLy8gaVBvZC9pUGhvbmVcbiAgICAgICAgICAgIF0sIFtNT0RFTCwgW1ZFTkRPUiwgQVBQTEVdLCBbVFlQRSwgTU9CSUxFXV0sIFtcbiAgICAgICAgICAgIC9cXCgoaXBhZCk7Wy1cXHdcXCksOyBdK2FwcGxlL2ksICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgLy8gaVBhZFxuICAgICAgICAgICAgL2FwcGxlY29yZW1lZGlhXFwvW1xcd1xcLl0rIFxcKChpcGFkKS9pLFxuICAgICAgICAgICAgL1xcYihpcGFkKVxcZFxcZD8sXFxkXFxkP1s7XFxdXS4raW9zL2lcbiAgICAgICAgICAgIF0sIFtNT0RFTCwgW1ZFTkRPUiwgQVBQTEVdLCBbVFlQRSwgVEFCTEVUXV0sIFtcbiAgICAgICAgICAgIC8obWFjaW50b3NoKTsvaVxuICAgICAgICAgICAgXSwgW01PREVMLCBbVkVORE9SLCBBUFBMRV1dLCBbXG5cbiAgICAgICAgICAgIC8vIFNoYXJwXG4gICAgICAgICAgICAvXFxiKHNoLT9bYWx0dnpdP1xcZFxcZFthLWVrbV0/KS9pXG4gICAgICAgICAgICBdLCBbTU9ERUwsIFtWRU5ET1IsIFNIQVJQXSwgW1RZUEUsIE1PQklMRV1dLCBbXG5cbiAgICAgICAgICAgIC8vIEhvbm9yXG4gICAgICAgICAgICAvXFxiKCg/OmJydHxlbG58aGV5Mj98Z2RpfGpkbiktYT9bbG53XTA5fCg/OmFnW3JtXTM/fGpkbjJ8a29iMiktYT9bbHddMFswOV1obikoPzogYnVpfFxcKXw7KS9pXG4gICAgICAgICAgICBdLCBbTU9ERUwsIFtWRU5ET1IsIEhPTk9SXSwgW1RZUEUsIFRBQkxFVF1dLCBbXG4gICAgICAgICAgICAvaG9ub3IoWy1cXHcgXSspWztcXCldL2lcbiAgICAgICAgICAgIF0sIFtNT0RFTCwgW1ZFTkRPUiwgSE9OT1JdLCBbVFlQRSwgTU9CSUxFXV0sIFtcblxuICAgICAgICAgICAgLy8gSHVhd2VpXG4gICAgICAgICAgICAvXFxiKCg/OmFnW3JzXVsyMzU2XT9rP3xiYWhbMjM0XT98YmdbMm9dfGJ0W2t2XXxjbXJ8Y3BufGRiW3J5XTI/fGpkbjJ8Z290fGtvYjI/az98bW9ufHBjZXxzY218c2h0P3xbdHddZ3J8dnJkKS1bYWRdP1tsd11bMDEyNV1bMDldYj98NjA1aHd8YmcyLXUwM3woPzpnZW18ZmRyfG0yfHBsZXx0MSktWzdhXTBbMS00XVtsdV18dDEtYTJbMTNdW2x3XXxtZWRpYXBhZFtcXHdcXC4gXSooPz0gYnVpfFxcKSkpXFxiKD8hLitkXFwvcykvaVxuICAgICAgICAgICAgXSwgW01PREVMLCBbVkVORE9SLCBIVUFXRUldLCBbVFlQRSwgVEFCTEVUXV0sIFtcbiAgICAgICAgICAgIC8oPzpodWF3ZWkpKFstXFx3IF0rKVs7XFwpXS9pLFxuICAgICAgICAgICAgL1xcYihuZXh1cyA2cHxcXHd7Miw0fWU/LVthdHVdP1tsbl1bXFxkeF1bMDEyMzU5Y11bYWRuXT8pXFxiKD8hLitkXFwvcykvaVxuICAgICAgICAgICAgXSwgW01PREVMLCBbVkVORE9SLCBIVUFXRUldLCBbVFlQRSwgTU9CSUxFXV0sIFtcblxuICAgICAgICAgICAgLy8gWGlhb21pXG4gICAgICAgICAgICAvb2lkW15cXCldKzsgKDJbXFxkYmNdezR9KDE4MnwyODN8cnBcXHd7Mn0pW2NnbF18bTIxMDVrODFhP2MpKD86IGJ1aXxcXCkpL2ksXG4gICAgICAgICAgICAvXFxiKCg/OnJlZCk/bWlbLV8gXT9wYWRbXFx3LSBdKikoPzogYnVpfFxcKSkvaSAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgLy8gTWkgUGFkIHRhYmxldHNcbiAgICAgICAgICAgIF0sW1tNT0RFTCwgL18vZywgJyAnXSwgW1ZFTkRPUiwgWElBT01JXSwgW1RZUEUsIFRBQkxFVF1dLCBbXG5cbiAgICAgICAgICAgIC9cXGIocG9jb1tcXHcgXSt8bTJcXGR7M31qXFxkXFxkW2Etel17Mn0pKD86IGJ1aXxcXCkpL2ksICAgICAgICAgICAgICAgICAgLy8gWGlhb21pIFBPQ09cbiAgICAgICAgICAgIC9cXGI7IChcXHcrKSBidWlsZFxcL2htXFwxL2ksICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgIC8vIFhpYW9taSBIb25nbWkgJ251bWVyaWMnIG1vZGVsc1xuICAgICAgICAgICAgL1xcYihobVstXyBdP25vdGU/W18gXT8oPzpcXGRcXHcpPykgYnVpL2ksICAgICAgICAgICAgICAgICAgICAgICAgICAgICAvLyBYaWFvbWkgSG9uZ21pXG4gICAgICAgICAgICAvXFxiKHJlZG1pW1xcLV8gXT8oPzpub3RlfGspP1tcXHdfIF0rKSg/OiBidWl8XFwpKS9pLCAgICAgICAgICAgICAgICAgICAvLyBYaWFvbWkgUmVkbWlcbiAgICAgICAgICAgIC9vaWRbXlxcKV0rOyAobT9bMTJdWzAtMzg5XVswMV1cXHd7Myw2fVtjLXldKSggYnVpfDsgd3Z8XFwpKS9pLCAgICAgICAgLy8gWGlhb21pIFJlZG1pICdudW1lcmljJyBtb2RlbHNcbiAgICAgICAgICAgIC9cXGIobWlbLV8gXT8oPzphXFxkfG9uZXxvbmVbXyBdcGx1c3xub3RlIGx0ZXxtYXh8Y2MpP1tfIF0/KD86XFxkP1xcdz8pW18gXT8oPzpwbHVzfHNlfGxpdGV8cHJvKT8pKD86IGJ1aXxcXCkpL2ksIC8vIFhpYW9taSBNaVxuICAgICAgICAgICAgLyAoW1xcdyBdKykgbWl1aVxcL3Y/XFxkL2lcbiAgICAgICAgICAgIF0sIFtbTU9ERUwsIC9fL2csICcgJ10sIFtWRU5ET1IsIFhJQU9NSV0sIFtUWVBFLCBNT0JJTEVdXSwgW1xuXG4gICAgICAgICAgICAvLyBPUFBPXG4gICAgICAgICAgICAvOyAoXFx3KykgYnVpLisgb3Bwby9pLFxuICAgICAgICAgICAgL1xcYihjcGhbMTJdXFxkezN9fHAoPzphZnxjW2FsXXxkXFx3fGVbYXJdKVttdF1cXGQwfHg5MDA3fGExMDFvcClcXGIvaVxuICAgICAgICAgICAgXSwgW01PREVMLCBbVkVORE9SLCBPUFBPXSwgW1RZUEUsIE1PQklMRV1dLCBbXG4gICAgICAgICAgICAvXFxiKG9wZDIoXFxkezN9YT8pKSg/OiBidWl8XFwpKS9pXG4gICAgICAgICAgICBdLCBbTU9ERUwsIFtWRU5ET1IsIHN0ck1hcHBlciwgeyAnT25lUGx1cycgOiBbJzMwNCcsICc0MDMnLCAnMjAzJ10sICcqJyA6IE9QUE8gfV0sIFtUWVBFLCBUQUJMRVRdXSwgW1xuXG4gICAgICAgICAgICAvLyBWaXZvXG4gICAgICAgICAgICAvdml2byAoXFx3KykoPzogYnVpfFxcKSkvaSxcbiAgICAgICAgICAgIC9cXGIodlsxMl1cXGR7M31cXHc/W2F0XSkoPzogYnVpfDspL2lcbiAgICAgICAgICAgIF0sIFtNT0RFTCwgW1ZFTkRPUiwgJ1Zpdm8nXSwgW1RZUEUsIE1PQklMRV1dLCBbXG5cbiAgICAgICAgICAgIC8vIFJlYWxtZVxuICAgICAgICAgICAgL1xcYihybXhbMS0zXVxcZHszfSkoPzogYnVpfDt8XFwpKS9pXG4gICAgICAgICAgICBdLCBbTU9ERUwsIFtWRU5ET1IsICdSZWFsbWUnXSwgW1RZUEUsIE1PQklMRV1dLCBbXG5cbiAgICAgICAgICAgIC8vIE1vdG9yb2xhXG4gICAgICAgICAgICAvXFxiKG1pbGVzdG9uZXxkcm9pZCg/OlsyLTR4XXwgKD86YmlvbmljfHgyfHByb3xyYXpyKSk/Oj8oIDRnKT8pXFxiW1xcdyBdK2J1aWxkXFwvL2ksXG4gICAgICAgICAgICAvXFxibW90KD86b3JvbGEpP1stIF0oXFx3KikvaSxcbiAgICAgICAgICAgIC8oKD86bW90byg/ISAzNjApW1xcd1xcKFxcKSBdK3x4dFxcZHszLDR9fG5leHVzIDYpKD89IGJ1aXxcXCkpKS9pXG4gICAgICAgICAgICBdLCBbTU9ERUwsIFtWRU5ET1IsIE1PVE9ST0xBXSwgW1RZUEUsIE1PQklMRV1dLCBbXG4gICAgICAgICAgICAvXFxiKG16NjBcXGR8eG9vbVsyIF17MCwyfSkgYnVpbGRcXC8vaVxuICAgICAgICAgICAgXSwgW01PREVMLCBbVkVORE9SLCBNT1RPUk9MQV0sIFtUWVBFLCBUQUJMRVRdXSwgW1xuXG4gICAgICAgICAgICAvLyBMR1xuICAgICAgICAgICAgLygoPz1sZyk/W3ZsXWtcXC0/XFxkezN9KSBidWl8IDNcXC5bLVxcdzsgXXsxMH1sZz8tKFswNmN2OV17Myw0fSkvaVxuICAgICAgICAgICAgXSwgW01PREVMLCBbVkVORE9SLCBMR10sIFtUWVBFLCBUQUJMRVRdXSwgW1xuICAgICAgICAgICAgLyhsbSg/Oi0/ZjEwMFtudl0/fC1bXFx3XFwuXSspKD89IGJ1aXxcXCkpfG5leHVzIFs0NV0pL2ksXG4gICAgICAgICAgICAvXFxibGdbLWU7XFwvIF0rKCg/IWJyb3dzZXJ8bmV0Y2FzdHxhbmRyb2lkIHR2fHdhdGNoKVxcdyspL2ksXG4gICAgICAgICAgICAvXFxibGctPyhbXFxkXFx3XSspIGJ1aS9pXG4gICAgICAgICAgICBdLCBbTU9ERUwsIFtWRU5ET1IsIExHXSwgW1RZUEUsIE1PQklMRV1dLCBbXG5cbiAgICAgICAgICAgIC8vIExlbm92b1xuICAgICAgICAgICAgLyhpZGVhdGFiWy1cXHcgXSt8NjAybHZ8ZC00MmF8YTEwMWx2fGEyMTA5YXxhMzUwMC1odnxzWzU2XTAwMHxwYi02NTA1W215XXx0Yi0/eD9cXGR7Myw0fSg/OmZbY3VdfHh1fFthdl0pfHl0XFxkPy1banhdP1xcZCtbbGZteF0pKCBidWl8O3xcXCl8XFwvKS9pLFxuICAgICAgICAgICAgL2xlbm92byA/KGJbNjhdMFswOF0wLT9baGZdP3x0YWIoPzpbXFx3LSBdKz8pfHRiW1xcdy1dezYsN30pKCBidWl8O3xcXCl8XFwvKS9pXG4gICAgICAgICAgICBdLCBbTU9ERUwsIFtWRU5ET1IsIExFTk9WT10sIFtUWVBFLCBUQUJMRVRdXSwgW1xuXG4gICAgICAgICAgICAvLyBOb2tpYVxuICAgICAgICAgICAgLyhub2tpYSkgKHRbMTJdWzAxXSkvaVxuICAgICAgICAgICAgXSwgW1ZFTkRPUiwgTU9ERUwsIFtUWVBFLCBUQUJMRVRdXSwgW1xuICAgICAgICAgICAgLyg/Om1hZW1vfG5va2lhKS4qKG45MDB8bHVtaWEgXFxkK3xybS1cXGQrKS9pLFxuICAgICAgICAgICAgL25va2lhWy1fIF0/KChbLVxcd1xcLiBdKikpL2lcbiAgICAgICAgICAgIF0sIFtbTU9ERUwsIC9fL2csICcgJ10sIFtUWVBFLCBNT0JJTEVdLCBbVkVORE9SLCAnTm9raWEnXV0sIFtcblxuICAgICAgICAgICAgLy8gR29vZ2xlXG4gICAgICAgICAgICAvKHBpeGVsIChjfHRhYmxldCkpXFxiL2kgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAvLyBHb29nbGUgUGl4ZWwgQy9UYWJsZXRcbiAgICAgICAgICAgIF0sIFtNT0RFTCwgW1ZFTkRPUiwgR09PR0xFXSwgW1RZUEUsIFRBQkxFVF1dLCBbXG4gICAgICAgICAgICAvZHJvaWQuKzsgKHBpeGVsW1xcZGF4bCBdezAsNn0pKD86IGJ1aXxcXCkpL2kgICAgICAgICAgICAgICAgICAgICAgICAgLy8gR29vZ2xlIFBpeGVsXG4gICAgICAgICAgICBdLCBbTU9ERUwsIFtWRU5ET1IsIEdPT0dMRV0sIFtUWVBFLCBNT0JJTEVdXSwgW1xuXG4gICAgICAgICAgICAvLyBTb255XG4gICAgICAgICAgICAvZHJvaWQuKzsgKGE/XFxkWzAtMl17Mn1zb3xbYy1nXVxcZHs0fXxzb1stZ2xdXFx3K3x4cS1hXFx3WzQtN11bMTJdKSg/PSBidWl8XFwpLitjaHJvbWVcXC8oPyFbMS02XXswLDF9XFxkXFwuKSkvaVxuICAgICAgICAgICAgXSwgW01PREVMLCBbVkVORE9SLCBTT05ZXSwgW1RZUEUsIE1PQklMRV1dLCBbXG4gICAgICAgICAgICAvc29ueSB0YWJsZXQgW3BzXS9pLFxuICAgICAgICAgICAgL1xcYig/OnNvbnkpP3NncFxcdysoPzogYnVpfFxcKSkvaVxuICAgICAgICAgICAgXSwgW1tNT0RFTCwgJ1hwZXJpYSBUYWJsZXQnXSwgW1ZFTkRPUiwgU09OWV0sIFtUWVBFLCBUQUJMRVRdXSwgW1xuXG4gICAgICAgICAgICAvLyBPbmVQbHVzXG4gICAgICAgICAgICAvIChrYjIwMDV8aW4yMFsxMl01fGJlMjBbMTJdWzU5XSlcXGIvaSxcbiAgICAgICAgICAgIC8oPzpvbmUpPyg/OnBsdXMpPyAoYVxcZDBcXGRcXGQpKD86IGJ8XFwpKS9pXG4gICAgICAgICAgICBdLCBbTU9ERUwsIFtWRU5ET1IsIE9ORVBMVVNdLCBbVFlQRSwgTU9CSUxFXV0sIFtcblxuICAgICAgICAgICAgLy8gQW1hem9uXG4gICAgICAgICAgICAvKGFsZXhhKXdlYm0vaSxcbiAgICAgICAgICAgIC8oa2ZbYS16XXsyfXdpfGFlbyg/IWJjKVxcd1xcdykoIGJ1aXxcXCkpL2ksICAgICAgICAgICAgICAgICAgICAgICAgICAgLy8gS2luZGxlIEZpcmUgd2l0aG91dCBTaWxrIC8gRWNobyBTaG93XG4gICAgICAgICAgICAvKGtmW2Etel0rKSggYnVpfFxcKSkuK3NpbGtcXC8vaSAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgLy8gS2luZGxlIEZpcmUgSERcbiAgICAgICAgICAgIF0sIFtNT0RFTCwgW1ZFTkRPUiwgQU1BWk9OXSwgW1RZUEUsIFRBQkxFVF1dLCBbXG4gICAgICAgICAgICAvKCg/OnNkfGtmKVswMzQ5aGlqb3JzdHV3XSspKCBidWl8XFwpKS4rc2lsa1xcLy9pICAgICAgICAgICAgICAgICAgICAgLy8gRmlyZSBQaG9uZVxuICAgICAgICAgICAgXSwgW1tNT0RFTCwgLyguKykvZywgJ0ZpcmUgUGhvbmUgJDEnXSwgW1ZFTkRPUiwgQU1BWk9OXSwgW1RZUEUsIE1PQklMRV1dLCBbXG5cbiAgICAgICAgICAgIC8vIEJsYWNrQmVycnlcbiAgICAgICAgICAgIC8ocGxheWJvb2spO1stXFx3XFwpLDsgXSsocmltKS9pICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAvLyBCbGFja0JlcnJ5IFBsYXlCb29rXG4gICAgICAgICAgICBdLCBbTU9ERUwsIFZFTkRPUiwgW1RZUEUsIFRBQkxFVF1dLCBbXG4gICAgICAgICAgICAvXFxiKCg/OmJiW2EtZl18c3RbaHZdKTEwMC1cXGQpL2ksXG4gICAgICAgICAgICAvXFwoYmIxMDsgKFxcdyspL2kgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgLy8gQmxhY2tCZXJyeSAxMFxuICAgICAgICAgICAgXSwgW01PREVMLCBbVkVORE9SLCBCTEFDS0JFUlJZXSwgW1RZUEUsIE1PQklMRV1dLCBbXG5cbiAgICAgICAgICAgIC8vIEFzdXNcbiAgICAgICAgICAgIC8oPzpcXGJ8YXN1c18pKHRyYW5zZm9bcHJpbWUgXXs0LDEwfSBcXHcrfGVlZXBjfHNsaWRlciBcXHcrfG5leHVzIDd8cGFkZm9uZXxwMDBbY2pdKS9pXG4gICAgICAgICAgICBdLCBbTU9ERUwsIFtWRU5ET1IsIEFTVVNdLCBbVFlQRSwgVEFCTEVUXV0sIFtcbiAgICAgICAgICAgIC8gKHpbYmVzXTZbMDI3XVswMTJdW2ttXVtsc118emVuZm9uZSBcXGRcXHc/KVxcYi9pXG4gICAgICAgICAgICBdLCBbTU9ERUwsIFtWRU5ET1IsIEFTVVNdLCBbVFlQRSwgTU9CSUxFXV0sIFtcblxuICAgICAgICAgICAgLy8gSFRDXG4gICAgICAgICAgICAvKG5leHVzIDkpL2kgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgIC8vIEhUQyBOZXh1cyA5XG4gICAgICAgICAgICBdLCBbTU9ERUwsIFtWRU5ET1IsICdIVEMnXSwgW1RZUEUsIFRBQkxFVF1dLCBbXG4gICAgICAgICAgICAvKGh0YylbLTtfIF17MSwyfShbXFx3IF0rKD89XFwpfCBidWkpfFxcdyspL2ksICAgICAgICAgICAgICAgICAgICAgICAgIC8vIEhUQ1xuXG4gICAgICAgICAgICAvLyBaVEVcbiAgICAgICAgICAgIC8oenRlKVstIF0oW1xcdyBdKz8pKD86IGJ1aXxcXC98XFwpKS9pLFxuICAgICAgICAgICAgLyhhbGNhdGVsfGdlZWtzcGhvbmV8bmV4aWFufHBhbmFzb25pYyg/ISg/Ojt8XFwuKSl8c29ueSg/IS1icmEpKVstXyBdPyhbLVxcd10qKS9pICAgICAgICAgLy8gQWxjYXRlbC9HZWVrc1Bob25lL05leGlhbi9QYW5hc29uaWMvU29ueVxuICAgICAgICAgICAgXSwgW1ZFTkRPUiwgW01PREVMLCAvXy9nLCAnICddLCBbVFlQRSwgTU9CSUxFXV0sIFtcblxuICAgICAgICAgICAgLy8gVENMXG4gICAgICAgICAgICAvZHJvaWQgW1xcd1xcLl0rOyAoKD86OFsxNF05WzE2XXw5KD86MCg/OjQ4fDYwfDhbMDFdKXwxKD86M1syN118NjYpfDIoPzo2WzY5XXw5WzU2XSl8NDY2KSlbZ3Fzd3hdKVxcdyooXFwpfCBidWkpL2lcbiAgICAgICAgICAgIF0sIFtNT0RFTCwgW1ZFTkRPUiwgJ1RDTCddLCBbVFlQRSwgVEFCTEVUXV0sIFtcblxuICAgICAgICAgICAgLy8gaXRlbFxuICAgICAgICAgICAgLyhpdGVsKSAoKFxcdyspKS9pXG4gICAgICAgICAgICBdLCBbW1ZFTkRPUiwgbG93ZXJpemVdLCBNT0RFTCwgW1RZUEUsIHN0ck1hcHBlciwgeyAndGFibGV0JyA6IFsncDEwMDAxbCcsICd3NzAwMSddLCAnKicgOiAnbW9iaWxlJyB9XV0sIFtcblxuICAgICAgICAgICAgLy8gQWNlclxuICAgICAgICAgICAgL2Ryb2lkLis7IChbYWJdWzEtN10tP1swMTc4YV1cXGRcXGQ/KS9pXG4gICAgICAgICAgICBdLCBbTU9ERUwsIFtWRU5ET1IsICdBY2VyJ10sIFtUWVBFLCBUQUJMRVRdXSwgW1xuXG4gICAgICAgICAgICAvLyBNZWl6dVxuICAgICAgICAgICAgL2Ryb2lkLis7IChtWzEtNV0gbm90ZSkgYnVpL2ksXG4gICAgICAgICAgICAvXFxibXotKFstXFx3XXsyLH0pL2lcbiAgICAgICAgICAgIF0sIFtNT0RFTCwgW1ZFTkRPUiwgJ01laXp1J10sIFtUWVBFLCBNT0JJTEVdXSwgW1xuICAgICAgICAgICAgICAgIFxuICAgICAgICAgICAgLy8gVWxlZm9uZVxuICAgICAgICAgICAgLzsgKCg/OnBvd2VyICk/YXJtb3IoPzpbXFx3IF17MCw4fSkpKD86IGJ1aXxcXCkpL2lcbiAgICAgICAgICAgIF0sIFtNT0RFTCwgW1ZFTkRPUiwgJ1VsZWZvbmUnXSwgW1RZUEUsIE1PQklMRV1dLCBbXG5cbiAgICAgICAgICAgIC8vIEVuZXJnaXplclxuICAgICAgICAgICAgLzsgKGVuZXJneSA/XFx3KykoPzogYnVpfFxcKSkvaSxcbiAgICAgICAgICAgIC87IGVuZXJnaXplciAoW1xcdyBdKykoPzogYnVpfFxcKSkvaVxuICAgICAgICAgICAgXSwgW01PREVMLCBbVkVORE9SLCAnRW5lcmdpemVyJ10sIFtUWVBFLCBNT0JJTEVdXSwgW1xuXG4gICAgICAgICAgICAvLyBDYXRcbiAgICAgICAgICAgIC87IGNhdCAoYjM1KTsvaSxcbiAgICAgICAgICAgIC87IChiMTVxP3xzMjIgZmxpcHxzNDhjfHM2MiBwcm8pKD86IGJ1aXxcXCkpL2lcbiAgICAgICAgICAgIF0sIFtNT0RFTCwgW1ZFTkRPUiwgJ0NhdCddLCBbVFlQRSwgTU9CSUxFXV0sIFtcblxuICAgICAgICAgICAgLy8gU21hcnRmcmVuXG4gICAgICAgICAgICAvKCg/Om5ldyApP2FuZHJvbWF4W1xcdy0gXSspKD86IGJ1aXxcXCkpL2lcbiAgICAgICAgICAgIF0sIFtNT0RFTCwgW1ZFTkRPUiwgJ1NtYXJ0ZnJlbiddLCBbVFlQRSwgTU9CSUxFXV0sIFtcblxuICAgICAgICAgICAgLy8gTm90aGluZ1xuICAgICAgICAgICAgL2Ryb2lkLis7IChhKD86MDE1fDA2WzM1XXwxNDJwPykpL2lcbiAgICAgICAgICAgIF0sIFtNT0RFTCwgW1ZFTkRPUiwgJ05vdGhpbmcnXSwgW1RZUEUsIE1PQklMRV1dLCBbXG5cbiAgICAgICAgICAgIC8vIEFyY2hvc1xuICAgICAgICAgICAgLzsgKHg2NyA1Z3x0aWtlYXN5IFxcdyt8YWNbMTc4OV1cXGRcXHcrKSggYnxcXCkpL2ksXG4gICAgICAgICAgICAvYXJjaG9zID8oNXxnYW1lcGFkMj98KFtcXHcgXSpbdDE3ODldfGhlbGxvKSA/XFxkK1tcXHcgXSopKCBifFxcKSkvaVxuICAgICAgICAgICAgXSwgW01PREVMLCBbVkVORE9SLCAnQXJjaG9zJ10sIFtUWVBFLCBUQUJMRVRdXSwgW1xuICAgICAgICAgICAgL2FyY2hvcyAoW1xcdyBdKykoIGJ8XFwpKS9pLFxuICAgICAgICAgICAgLzsgKGFjWzMtNl1cXGRcXHd7Miw4fSkoIGJ8XFwpKS9pIFxuICAgICAgICAgICAgXSwgW01PREVMLCBbVkVORE9SLCAnQXJjaG9zJ10sIFtUWVBFLCBNT0JJTEVdXSwgW1xuXG4gICAgICAgICAgICAvLyBNSVhFRFxuICAgICAgICAgICAgLyhpbW8pICh0YWIgXFx3KykvaSwgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgLy8gSU1PXG4gICAgICAgICAgICAvKGluZmluaXgpICh4MTEwMWI/KS9pICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgIC8vIEluZmluaXggWFBhZFxuICAgICAgICAgICAgXSwgW1ZFTkRPUiwgTU9ERUwsIFtUWVBFLCBUQUJMRVRdXSwgW1xuXG4gICAgICAgICAgICAvKGJsYWNrYmVycnl8YmVucXxwYWxtKD89XFwtKXxzb255ZXJpY3Nzb258YWNlcnxhc3VzKD8hIHplbncpfGRlbGx8am9sbGF8bWVpenV8bW90b3JvbGF8cG9seXRyb258aW5maW5peHx0ZWNub3xtaWNyb21heHxhZHZhbilbLV8gXT8oWy1cXHddKikvaSxcbiAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgLy8gQmxhY2tCZXJyeS9CZW5RL1BhbG0vU29ueS1Fcmljc3Nvbi9BY2VyL0FzdXMvRGVsbC9NZWl6dS9Nb3Rvcm9sYS9Qb2x5dHJvbi9JbmZpbml4L1RlY25vL01pY3JvbWF4L0FkdmFuXG4gICAgICAgICAgICAvOyAoaG1kfGltbykgKFtcXHcgXSs/KSg/OiBidWl8XFwpKS9pLCAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgLy8gSE1EL0lNT1xuICAgICAgICAgICAgLyhocCkgKFtcXHcgXStcXHcpL2ksICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgIC8vIEhQIGlQQVFcbiAgICAgICAgICAgIC8obWljcm9zb2Z0KTsgKGx1bWlhW1xcdyBdKykvaSwgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgIC8vIE1pY3Jvc29mdCBMdW1pYVxuICAgICAgICAgICAgLyhsZW5vdm8pWy1fIF0/KFstXFx3IF0rPykoPzogYnVpfFxcKXxcXC8pL2ksICAgICAgICAgICAgICAgICAgICAgICAgICAvLyBMZW5vdm9cbiAgICAgICAgICAgIC8ob3BwbykgPyhbXFx3IF0rKSBidWkvaSAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgIC8vIE9QUE9cbiAgICAgICAgICAgIF0sIFtWRU5ET1IsIE1PREVMLCBbVFlQRSwgTU9CSUxFXV0sIFtcblxuICAgICAgICAgICAgLyhrb2JvKVxccyhlcmVhZGVyfHRvdWNoKS9pLCAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgLy8gS29ib1xuICAgICAgICAgICAgLyhocCkuKyh0b3VjaHBhZCg/IS4rdGFibGV0KXx0YWJsZXQpL2ksICAgICAgICAgICAgICAgICAgICAgICAgICAgICAvLyBIUCBUb3VjaFBhZFxuICAgICAgICAgICAgLyhraW5kbGUpXFwvKFtcXHdcXC5dKykvaSwgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAvLyBLaW5kbGVcbiAgICAgICAgICAgIC8obm9vaylbXFx3IF0rYnVpbGRcXC8oXFx3KykvaSwgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgLy8gTm9va1xuICAgICAgICAgICAgLyhkZWxsKSAoc3RyZWFba3ByXFxkIF0qW1xcZGtvXSkvaSwgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgIC8vIERlbGwgU3RyZWFrXG4gICAgICAgICAgICAvKGxlWy0gXStwYW4pWy0gXSsoXFx3ezEsOX0pIGJ1aS9pLCAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAvLyBMZSBQYW4gVGFibGV0c1xuICAgICAgICAgICAgLyh0cmluaXR5KVstIF0qKHRcXGR7M30pIGJ1aS9pLCAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgLy8gVHJpbml0eSBUYWJsZXRzXG4gICAgICAgICAgICAvKGdpZ2FzZXQpWy0gXSsocVxcd3sxLDl9KSBidWkvaSwgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAvLyBHaWdhc2V0IFRhYmxldHNcbiAgICAgICAgICAgIC8odm9kYWZvbmUpIChbXFx3IF0rKSg/OlxcKXwgYnVpKS9pICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAvLyBWb2RhZm9uZVxuICAgICAgICAgICAgXSwgW1ZFTkRPUiwgTU9ERUwsIFtUWVBFLCBUQUJMRVRdXSwgW1xuXG4gICAgICAgICAgICAvKHN1cmZhY2UgZHVvKS9pICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgIC8vIFN1cmZhY2UgRHVvXG4gICAgICAgICAgICBdLCBbTU9ERUwsIFtWRU5ET1IsIE1JQ1JPU09GVF0sIFtUWVBFLCBUQUJMRVRdXSwgW1xuICAgICAgICAgICAgL2Ryb2lkIFtcXGRcXC5dKzsgKGZwXFxkdT8pKD86IGJ8XFwpKS9pICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgLy8gRmFpcnBob25lXG4gICAgICAgICAgICBdLCBbTU9ERUwsIFtWRU5ET1IsICdGYWlycGhvbmUnXSwgW1RZUEUsIE1PQklMRV1dLCBbXG4gICAgICAgICAgICAvKHUzMDRhYSkvaSAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgIC8vIEFUJlRcbiAgICAgICAgICAgIF0sIFtNT0RFTCwgW1ZFTkRPUiwgJ0FUJlQnXSwgW1RZUEUsIE1PQklMRV1dLCBbXG4gICAgICAgICAgICAvXFxic2llLShcXHcqKS9pICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgLy8gU2llbWVuc1xuICAgICAgICAgICAgXSwgW01PREVMLCBbVkVORE9SLCAnU2llbWVucyddLCBbVFlQRSwgTU9CSUxFXV0sIFtcbiAgICAgICAgICAgIC9cXGIocmN0XFx3KykgYi9pICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAvLyBSQ0EgVGFibGV0c1xuICAgICAgICAgICAgXSwgW01PREVMLCBbVkVORE9SLCAnUkNBJ10sIFtUWVBFLCBUQUJMRVRdXSwgW1xuICAgICAgICAgICAgL1xcYih2ZW51ZVtcXGQgXXsyLDd9KSBiL2kgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgIC8vIERlbGwgVmVudWUgVGFibGV0c1xuICAgICAgICAgICAgXSwgW01PREVMLCBbVkVORE9SLCAnRGVsbCddLCBbVFlQRSwgVEFCTEVUXV0sIFtcbiAgICAgICAgICAgIC9cXGIocSg/Om12fHRhKVxcdyspIGIvaSAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAvLyBWZXJpem9uIFRhYmxldFxuICAgICAgICAgICAgXSwgW01PREVMLCBbVkVORE9SLCAnVmVyaXpvbiddLCBbVFlQRSwgVEFCTEVUXV0sIFtcbiAgICAgICAgICAgIC9cXGIoPzpiYXJuZXNbJiBdK25vYmxlIHxibltydF0pKFtcXHdcXCsgXSopIGIvaSAgICAgICAgICAgICAgICAgICAgICAgLy8gQmFybmVzICYgTm9ibGUgVGFibGV0XG4gICAgICAgICAgICBdLCBbTU9ERUwsIFtWRU5ET1IsICdCYXJuZXMgJiBOb2JsZSddLCBbVFlQRSwgVEFCTEVUXV0sIFtcbiAgICAgICAgICAgIC9cXGIodG1cXGR7M31cXHcrKSBiL2lcbiAgICAgICAgICAgIF0sIFtNT0RFTCwgW1ZFTkRPUiwgJ051VmlzaW9uJ10sIFtUWVBFLCBUQUJMRVRdXSwgW1xuICAgICAgICAgICAgL1xcYihrODgpIGIvaSAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgLy8gWlRFIEsgU2VyaWVzIFRhYmxldFxuICAgICAgICAgICAgXSwgW01PREVMLCBbVkVORE9SLCAnWlRFJ10sIFtUWVBFLCBUQUJMRVRdXSwgW1xuICAgICAgICAgICAgL1xcYihueFxcZHszfWopIGIvaSAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgIC8vIFpURSBOdWJpYVxuICAgICAgICAgICAgXSwgW01PREVMLCBbVkVORE9SLCAnWlRFJ10sIFtUWVBFLCBNT0JJTEVdXSwgW1xuICAgICAgICAgICAgL1xcYihnZW5cXGR7M30pIGIuKzQ5aC9pICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgIC8vIFN3aXNzIEdFTiBNb2JpbGVcbiAgICAgICAgICAgIF0sIFtNT0RFTCwgW1ZFTkRPUiwgJ1N3aXNzJ10sIFtUWVBFLCBNT0JJTEVdXSwgW1xuICAgICAgICAgICAgL1xcYih6dXJcXGR7M30pIGIvaSAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgIC8vIFN3aXNzIFpVUiBUYWJsZXRcbiAgICAgICAgICAgIF0sIFtNT0RFTCwgW1ZFTkRPUiwgJ1N3aXNzJ10sIFtUWVBFLCBUQUJMRVRdXSwgW1xuICAgICAgICAgICAgL1xcYigoemVraSk/dGIuKlxcYikgYi9pICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgIC8vIFpla2kgVGFibGV0c1xuICAgICAgICAgICAgXSwgW01PREVMLCBbVkVORE9SLCAnWmVraSddLCBbVFlQRSwgVEFCTEVUXV0sIFtcbiAgICAgICAgICAgIC9cXGIoW3lyXVxcZHsyfSkgYi9pLFxuICAgICAgICAgICAgL1xcYihkcmFnb25bLSBdK3RvdWNoIHxkdCkoXFx3ezV9KSBiL2kgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgIC8vIERyYWdvbiBUb3VjaCBUYWJsZXRcbiAgICAgICAgICAgIF0sIFtbVkVORE9SLCAnRHJhZ29uIFRvdWNoJ10sIE1PREVMLCBbVFlQRSwgVEFCTEVUXV0sIFtcbiAgICAgICAgICAgIC9cXGIobnMtP1xcd3swLDl9KSBiL2kgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAvLyBJbnNpZ25pYSBUYWJsZXRzXG4gICAgICAgICAgICBdLCBbTU9ERUwsIFtWRU5ET1IsICdJbnNpZ25pYSddLCBbVFlQRSwgVEFCTEVUXV0sIFtcbiAgICAgICAgICAgIC9cXGIoKG54YXxuZXh0KS0/XFx3ezAsOX0pIGIvaSAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAvLyBOZXh0Qm9vayBUYWJsZXRzXG4gICAgICAgICAgICBdLCBbTU9ERUwsIFtWRU5ET1IsICdOZXh0Qm9vayddLCBbVFlQRSwgVEFCTEVUXV0sIFtcbiAgICAgICAgICAgIC9cXGIoeHRyZW1lXFxfKT8odigxWzA0NV18MlswMTVdfFszNDY5XTB8N1swNV0pKSBiL2kgICAgICAgICAgICAgICAgICAvLyBWb2ljZSBYdHJlbWUgUGhvbmVzXG4gICAgICAgICAgICBdLCBbW1ZFTkRPUiwgJ1ZvaWNlJ10sIE1PREVMLCBbVFlQRSwgTU9CSUxFXV0sIFtcbiAgICAgICAgICAgIC9cXGIobHZ0ZWxcXC0pPyh2MVsxMl0pIGIvaSAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAvLyBMdlRlbCBQaG9uZXNcbiAgICAgICAgICAgIF0sIFtbVkVORE9SLCAnTHZUZWwnXSwgTU9ERUwsIFtUWVBFLCBNT0JJTEVdXSwgW1xuICAgICAgICAgICAgL1xcYihwaC0xKSAvaSAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgLy8gRXNzZW50aWFsIFBILTFcbiAgICAgICAgICAgIF0sIFtNT0RFTCwgW1ZFTkRPUiwgJ0Vzc2VudGlhbCddLCBbVFlQRSwgTU9CSUxFXV0sIFtcbiAgICAgICAgICAgIC9cXGIodigxMDBtZHw3MDBuYXw3MDExfDkxN2cpLipcXGIpIGIvaSAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAvLyBFbnZpemVuIFRhYmxldHNcbiAgICAgICAgICAgIF0sIFtNT0RFTCwgW1ZFTkRPUiwgJ0Vudml6ZW4nXSwgW1RZUEUsIFRBQkxFVF1dLCBbXG4gICAgICAgICAgICAvXFxiKHRyaW9bLVxcd1xcLiBdKykgYi9pICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgIC8vIE1hY2hTcGVlZCBUYWJsZXRzXG4gICAgICAgICAgICBdLCBbTU9ERUwsIFtWRU5ET1IsICdNYWNoU3BlZWQnXSwgW1RZUEUsIFRBQkxFVF1dLCBbXG4gICAgICAgICAgICAvXFxidHVfKDE0OTEpIGIvaSAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAvLyBSb3RvciBUYWJsZXRzXG4gICAgICAgICAgICBdLCBbTU9ERUwsIFtWRU5ET1IsICdSb3RvciddLCBbVFlQRSwgVEFCTEVUXV0sIFtcbiAgICAgICAgICAgIC8oKD86dGVncmFub3RlfHNoaWVsZCB0KD8hLitkIHR2KSlbXFx3LSBdKj8pKD86IGJ8XFwpKS9pICAgICAgICAgICAgICAvLyBOdmlkaWEgVGFibGV0c1xuICAgICAgICAgICAgXSwgW01PREVMLCBbVkVORE9SLCBOVklESUFdLCBbVFlQRSwgVEFCTEVUXV0sIFtcbiAgICAgICAgICAgIC8oc3ByaW50KSAoXFx3KykvaSAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgIC8vIFNwcmludCBQaG9uZXNcbiAgICAgICAgICAgIF0sIFtWRU5ET1IsIE1PREVMLCBbVFlQRSwgTU9CSUxFXV0sIFtcbiAgICAgICAgICAgIC8oa2luXFwuW29uZXR3XXszfSkvaSAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgIC8vIE1pY3Jvc29mdCBLaW5cbiAgICAgICAgICAgIF0sIFtbTU9ERUwsIC9cXC4vZywgJyAnXSwgW1ZFTkRPUiwgTUlDUk9TT0ZUXSwgW1RZUEUsIE1PQklMRV1dLCBbXG4gICAgICAgICAgICAvZHJvaWQuKzsgKGNjNjY2Nj98ZXQ1WzE2XXxtY1syMzldWzIzXXg/fHZjOFswM114PylcXCkvaSAgICAgICAgICAgICAvLyBaZWJyYVxuICAgICAgICAgICAgXSwgW01PREVMLCBbVkVORE9SLCBaRUJSQV0sIFtUWVBFLCBUQUJMRVRdXSwgW1xuICAgICAgICAgICAgL2Ryb2lkLis7IChlYzMwfHBzMjB8dGNbMi04XVxcZFtreF0pXFwpL2lcbiAgICAgICAgICAgIF0sIFtNT0RFTCwgW1ZFTkRPUiwgWkVCUkFdLCBbVFlQRSwgTU9CSUxFXV0sIFtcblxuICAgICAgICAgICAgLy8vLy8vLy8vLy8vLy8vLy8vL1xuICAgICAgICAgICAgLy8gU01BUlRUVlNcbiAgICAgICAgICAgIC8vLy8vLy8vLy8vLy8vLy8vLy9cblxuICAgICAgICAgICAgL3NtYXJ0LXR2Lisoc2Ftc3VuZykvaSAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAvLyBTYW1zdW5nXG4gICAgICAgICAgICBdLCBbVkVORE9SLCBbVFlQRSwgU01BUlRUVl1dLCBbXG4gICAgICAgICAgICAvaGJidHYuK21hcGxlOyhcXGQrKS9pXG4gICAgICAgICAgICBdLCBbW01PREVMLCAvXi8sICdTbWFydFRWJ10sIFtWRU5ET1IsIFNBTVNVTkddLCBbVFlQRSwgU01BUlRUVl1dLCBbXG4gICAgICAgICAgICAvKG51eDsgbmV0Y2FzdC4rc21hcnR0dnxsZyAobmV0Y2FzdFxcLnR2LTIwMVxcZHxhbmRyb2lkIHR2KSkvaSAgICAgICAgLy8gTEcgU21hcnRUVlxuICAgICAgICAgICAgXSwgW1tWRU5ET1IsIExHXSwgW1RZUEUsIFNNQVJUVFZdXSwgW1xuICAgICAgICAgICAgLyhhcHBsZSkgP3R2L2kgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAvLyBBcHBsZSBUVlxuICAgICAgICAgICAgXSwgW1ZFTkRPUiwgW01PREVMLCBBUFBMRSsnIFRWJ10sIFtUWVBFLCBTTUFSVFRWXV0sIFtcbiAgICAgICAgICAgIC9jcmtleS9pICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgLy8gR29vZ2xlIENocm9tZWNhc3RcbiAgICAgICAgICAgIF0sIFtbTU9ERUwsIENIUk9NRSsnY2FzdCddLCBbVkVORE9SLCBHT09HTEVdLCBbVFlQRSwgU01BUlRUVl1dLCBbXG4gICAgICAgICAgICAvZHJvaWQuK2FmdChcXHcrKSggYnVpfFxcKSkvaSAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgLy8gRmlyZSBUVlxuICAgICAgICAgICAgXSwgW01PREVMLCBbVkVORE9SLCBBTUFaT05dLCBbVFlQRSwgU01BUlRUVl1dLCBbXG4gICAgICAgICAgICAvKHNoaWVsZCBcXHcrIHR2KS9pICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAvLyBOdmlkaWEgU2hpZWxkIFRWXG4gICAgICAgICAgICBdLCBbTU9ERUwsIFtWRU5ET1IsIE5WSURJQV0sIFtUWVBFLCBTTUFSVFRWXV0sIFtcbiAgICAgICAgICAgIC9cXChkdHZbXFwpO10uKyhhcXVvcykvaSxcbiAgICAgICAgICAgIC8oYXF1b3MtdHZbXFx3IF0rKVxcKS9pICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAvLyBTaGFycFxuICAgICAgICAgICAgXSwgW01PREVMLCBbVkVORE9SLCBTSEFSUF0sIFtUWVBFLCBTTUFSVFRWXV0sW1xuICAgICAgICAgICAgLyhicmF2aWFbXFx3IF0rKSggYnVpfFxcKSkvaSAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAvLyBTb255XG4gICAgICAgICAgICBdLCBbTU9ERUwsIFtWRU5ET1IsIFNPTlldLCBbVFlQRSwgU01BUlRUVl1dLCBbXG4gICAgICAgICAgICAvKG1pKHR2fGJveCktP1xcdyspIGJ1aS9pICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAvLyBYaWFvbWlcbiAgICAgICAgICAgIF0sIFtNT0RFTCwgW1ZFTkRPUiwgWElBT01JXSwgW1RZUEUsIFNNQVJUVFZdXSwgW1xuICAgICAgICAgICAgL0hiYnR2LioodGVjaG5pc2F0KSAoLiopOy9pICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAvLyBUZWNobmlTQVRcbiAgICAgICAgICAgIF0sIFtWRU5ET1IsIE1PREVMLCBbVFlQRSwgU01BUlRUVl1dLCBbXG4gICAgICAgICAgICAvXFxiKHJva3UpW1xcZHhdKltcXClcXC9dKCg/OmR2cC0pP1tcXGRcXC5dKikvaSwgICAgICAgICAgICAgICAgICAgICAgICAgIC8vIFJva3VcbiAgICAgICAgICAgIC9oYmJ0dlxcL1xcZCtcXC5cXGQrXFwuXFxkKyArXFwoW1xcd1xcKyBdKjsgKihbXFx3XFxkXVteO10qKTsoW147XSopL2kgICAgICAgICAvLyBIYmJUViBkZXZpY2VzXG4gICAgICAgICAgICBdLCBbW1ZFTkRPUiwgdHJpbV0sIFtNT0RFTCwgdHJpbV0sIFtUWVBFLCBTTUFSVFRWXV0sIFtcbiAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgLy8gU21hcnRUViBmcm9tIFVuaWRlbnRpZmllZCBWZW5kb3JzXG4gICAgICAgICAgICAvZHJvaWQuKzsgKFtcXHctIF0rKSAoPzphbmRyb2lkIHR2fHNtYXJ0Wy0gXT90dikvaVxuICAgICAgICAgICAgXSwgW01PREVMLCBbVFlQRSwgU01BUlRUVl1dLCBbXG4gICAgICAgICAgICAvXFxiKGFuZHJvaWQgdHZ8c21hcnRbLSBdP3R2fG9wZXJhIHR2fHR2OyBydjopXFxiL2lcbiAgICAgICAgICAgIF0sIFtbVFlQRSwgU01BUlRUVl1dLCBbXG5cbiAgICAgICAgICAgIC8vLy8vLy8vLy8vLy8vLy8vLy9cbiAgICAgICAgICAgIC8vIENPTlNPTEVTXG4gICAgICAgICAgICAvLy8vLy8vLy8vLy8vLy8vLy8vXG5cbiAgICAgICAgICAgIC8ob3V5YSkvaSwgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgLy8gT3V5YVxuICAgICAgICAgICAgLyhuaW50ZW5kbykgKFt3aWRzM3V0Y2hdKykvaSAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAvLyBOaW50ZW5kb1xuICAgICAgICAgICAgXSwgW1ZFTkRPUiwgTU9ERUwsIFtUWVBFLCBDT05TT0xFXV0sIFtcbiAgICAgICAgICAgIC9kcm9pZC4rOyAoc2hpZWxkKSggYnVpfFxcKSkvaSAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgIC8vIE52aWRpYSBQb3J0YWJsZVxuICAgICAgICAgICAgXSwgW01PREVMLCBbVkVORE9SLCBOVklESUFdLCBbVFlQRSwgQ09OU09MRV1dLCBbXG4gICAgICAgICAgICAvKHBsYXlzdGF0aW9uIFxcdyspL2kgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAvLyBQbGF5c3RhdGlvblxuICAgICAgICAgICAgXSwgW01PREVMLCBbVkVORE9SLCBTT05ZXSwgW1RZUEUsIENPTlNPTEVdXSwgW1xuICAgICAgICAgICAgL1xcYih4Ym94KD86IG9uZSk/KD8hOyB4Ym94KSlbXFwpOyBdL2kgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgIC8vIE1pY3Jvc29mdCBYYm94XG4gICAgICAgICAgICBdLCBbTU9ERUwsIFtWRU5ET1IsIE1JQ1JPU09GVF0sIFtUWVBFLCBDT05TT0xFXV0sIFtcblxuICAgICAgICAgICAgLy8vLy8vLy8vLy8vLy8vLy8vL1xuICAgICAgICAgICAgLy8gV0VBUkFCTEVTXG4gICAgICAgICAgICAvLy8vLy8vLy8vLy8vLy8vLy8vXG5cbiAgICAgICAgICAgIC9cXGIoc20tW2xyXVxcZFxcZFswMTU2XVtmbnV3XT9zP3xnZWFyIGxpdmUpXFxiL2kgICAgICAgICAgICAgICAgICAgICAgIC8vIFNhbXN1bmcgR2FsYXh5IFdhdGNoXG4gICAgICAgICAgICBdLCBbTU9ERUwsIFtWRU5ET1IsIFNBTVNVTkddLCBbVFlQRSwgV0VBUkFCTEVdXSwgW1xuICAgICAgICAgICAgLygocGViYmxlKSlhcHAvaSwgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAvLyBQZWJibGVcbiAgICAgICAgICAgIC8oYXN1c3xnb29nbGV8bGd8b3BwbykgKChwaXhlbCB8emVuKT93YXRjaFtcXHcgXSopKCBidWl8XFwpKS9pICAgICAgICAvLyBBc3VzIFplbldhdGNoIC8gTEcgV2F0Y2ggLyBQaXhlbCBXYXRjaFxuICAgICAgICAgICAgXSwgW1ZFTkRPUiwgTU9ERUwsIFtUWVBFLCBXRUFSQUJMRV1dLCBbXG4gICAgICAgICAgICAvKG93KD86MTl8MjApP3dlP1sxLTNdezEsM30pL2kgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgIC8vIE9wcG8gV2F0Y2hcbiAgICAgICAgICAgIF0sIFtNT0RFTCwgW1ZFTkRPUiwgT1BQT10sIFtUWVBFLCBXRUFSQUJMRV1dLCBbXG4gICAgICAgICAgICAvKHdhdGNoKSg/OiA/b3NbLFxcL118XFxkLFxcZFxcLylbXFxkXFwuXSsvaSAgICAgICAgICAgICAgICAgICAgICAgICAgICAgIC8vIEFwcGxlIFdhdGNoXG4gICAgICAgICAgICBdLCBbTU9ERUwsIFtWRU5ET1IsIEFQUExFXSwgW1RZUEUsIFdFQVJBQkxFXV0sIFtcbiAgICAgICAgICAgIC8ob3B3d2VcXGR7M30pL2kgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgIC8vIE9uZVBsdXMgV2F0Y2hcbiAgICAgICAgICAgIF0sIFtNT0RFTCwgW1ZFTkRPUiwgT05FUExVU10sIFtUWVBFLCBXRUFSQUJMRV1dLCBbXG4gICAgICAgICAgICAvKG1vdG8gMzYwKS9pICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgIC8vIE1vdG9yb2xhIDM2MFxuICAgICAgICAgICAgXSwgW01PREVMLCBbVkVORE9SLCBNT1RPUk9MQV0sIFtUWVBFLCBXRUFSQUJMRV1dLCBbXG4gICAgICAgICAgICAvKHNtYXJ0d2F0Y2ggMykvaSAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgIC8vIFNvbnkgU21hcnRXYXRjaFxuICAgICAgICAgICAgXSwgW01PREVMLCBbVkVORE9SLCBTT05ZXSwgW1RZUEUsIFdFQVJBQkxFXV0sIFtcbiAgICAgICAgICAgIC8oZyB3YXRjaCByKS9pICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgLy8gTEcgRyBXYXRjaCBSXG4gICAgICAgICAgICBdLCBbTU9ERUwsIFtWRU5ET1IsIExHXSwgW1RZUEUsIFdFQVJBQkxFXV0sIFtcbiAgICAgICAgICAgIC9kcm9pZC4rOyAod3Q2Mz8wezIsM30pXFwpL2lcbiAgICAgICAgICAgIF0sIFtNT0RFTCwgW1ZFTkRPUiwgWkVCUkFdLCBbVFlQRSwgV0VBUkFCTEVdXSwgW1xuXG4gICAgICAgICAgICAvLy8vLy8vLy8vLy8vLy8vLy8vXG4gICAgICAgICAgICAvLyBYUlxuICAgICAgICAgICAgLy8vLy8vLy8vLy8vLy8vLy8vL1xuXG4gICAgICAgICAgICAvZHJvaWQuKzsgKGdsYXNzKSBcXGQvaSAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAvLyBHb29nbGUgR2xhc3NcbiAgICAgICAgICAgIF0sIFtNT0RFTCwgW1ZFTkRPUiwgR09PR0xFXSwgW1RZUEUsIFdFQVJBQkxFXV0sIFtcbiAgICAgICAgICAgIC8ocGljbykgKDR8bmVvMyg/OiBsaW5rfHBybyk/KS9pICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgLy8gUGljb1xuICAgICAgICAgICAgXSwgW1ZFTkRPUiwgTU9ERUwsIFtUWVBFLCBXRUFSQUJMRV1dLCBbXG4gICAgICAgICAgICAvOyAocXVlc3QoIFxcZHwgcHJvKT8pL2kgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAvLyBPY3VsdXMgUXVlc3RcbiAgICAgICAgICAgIF0sIFtNT0RFTCwgW1ZFTkRPUiwgRkFDRUJPT0tdLCBbVFlQRSwgV0VBUkFCTEVdXSwgW1xuXG4gICAgICAgICAgICAvLy8vLy8vLy8vLy8vLy8vLy8vXG4gICAgICAgICAgICAvLyBFTUJFRERFRFxuICAgICAgICAgICAgLy8vLy8vLy8vLy8vLy8vLy8vL1xuXG4gICAgICAgICAgICAvKHRlc2xhKSg/OiBxdGNhcmJyb3dzZXJ8XFwvWy1cXHdcXC5dKykvaSAgICAgICAgICAgICAgICAgICAgICAgICAgICAgIC8vIFRlc2xhXG4gICAgICAgICAgICBdLCBbVkVORE9SLCBbVFlQRSwgRU1CRURERURdXSwgW1xuICAgICAgICAgICAgLyhhZW9iYylcXGIvaSAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgLy8gRWNobyBEb3RcbiAgICAgICAgICAgIF0sIFtNT0RFTCwgW1ZFTkRPUiwgQU1BWk9OXSwgW1RZUEUsIEVNQkVEREVEXV0sIFtcbiAgICAgICAgICAgIC8oaG9tZXBvZCkuK21hYyBvcy9pICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgLy8gQXBwbGUgSG9tZVBvZFxuICAgICAgICAgICAgXSwgW01PREVMLCBbVkVORE9SLCBBUFBMRV0sIFtUWVBFLCBFTUJFRERFRF1dLCBbXG4gICAgICAgICAgICAvd2luZG93cyBpb3QvaVxuICAgICAgICAgICAgXSwgW1tUWVBFLCBFTUJFRERFRF1dLCBbXG5cbiAgICAgICAgICAgIC8vLy8vLy8vLy8vLy8vLy8vLy8vXG4gICAgICAgICAgICAvLyBNSVhFRCAoR0VORVJJQylcbiAgICAgICAgICAgIC8vLy8vLy8vLy8vLy8vLy8vLy9cblxuICAgICAgICAgICAgL2Ryb2lkIC4rPzsgKFteO10rPykoPzogYnVpfDsgd3ZcXCl8XFwpIGFwcGxldykuKz8gbW9iaWxlIHNhZmFyaS9pICAgIC8vIEFuZHJvaWQgUGhvbmVzIGZyb20gVW5pZGVudGlmaWVkIFZlbmRvcnNcbiAgICAgICAgICAgIF0sIFtNT0RFTCwgW1RZUEUsIE1PQklMRV1dLCBbXG4gICAgICAgICAgICAvZHJvaWQgLis/OyAoW147XSs/KSg/OiBidWl8XFwpIGFwcGxldykuKz8oPyEgbW9iaWxlKSBzYWZhcmkvaSAgICAgICAvLyBBbmRyb2lkIFRhYmxldHMgZnJvbSBVbmlkZW50aWZpZWQgVmVuZG9yc1xuICAgICAgICAgICAgXSwgW01PREVMLCBbVFlQRSwgVEFCTEVUXV0sIFtcbiAgICAgICAgICAgIC9cXGIoKHRhYmxldHx0YWIpWztcXC9dfGZvY3VzXFwvXFxkKD8hLittb2JpbGUpKS9pICAgICAgICAgICAgICAgICAgICAgIC8vIFVuaWRlbnRpZmlhYmxlIFRhYmxldFxuICAgICAgICAgICAgXSwgW1tUWVBFLCBUQUJMRVRdXSwgW1xuICAgICAgICAgICAgLyhwaG9uZXxtb2JpbGUoPzpbO1xcL118IFsgXFx3XFwvXFwuXSpzYWZhcmkpfHBkYSg/PS4rd2luZG93cyBjZSkpL2kgICAgLy8gVW5pZGVudGlmaWFibGUgTW9iaWxlXG4gICAgICAgICAgICBdLCBbW1RZUEUsIE1PQklMRV1dLCBbXG4gICAgICAgICAgICAvZHJvaWQgLis/OyAoW1xcd1xcLiAtXSspKCBidWl8XFwpKS9pICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgIC8vIEdlbmVyaWMgQW5kcm9pZCBEZXZpY2VcbiAgICAgICAgICAgIF0sIFtNT0RFTCwgW1ZFTkRPUiwgJ0dlbmVyaWMnXV1cbiAgICAgICAgXSxcblxuICAgICAgICBlbmdpbmUgOiBbW1xuXG4gICAgICAgICAgICAvd2luZG93cy4rIGVkZ2VcXC8oW1xcd1xcLl0rKS9pICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgLy8gRWRnZUhUTUxcbiAgICAgICAgICAgIF0sIFtWRVJTSU9OLCBbTkFNRSwgRURHRSsnSFRNTCddXSwgW1xuXG4gICAgICAgICAgICAvKGFya3dlYilcXC8oW1xcd1xcLl0rKS9pICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgIC8vIEFya1dlYlxuICAgICAgICAgICAgXSwgW05BTUUsIFZFUlNJT05dLCBbXG5cbiAgICAgICAgICAgIC93ZWJraXRcXC81MzdcXC4zNi4rY2hyb21lXFwvKD8hMjcpKFtcXHdcXC5dKykvaSAgICAgICAgICAgICAgICAgICAgICAgICAvLyBCbGlua1xuICAgICAgICAgICAgXSwgW1ZFUlNJT04sIFtOQU1FLCAnQmxpbmsnXV0sIFtcblxuICAgICAgICAgICAgLyhwcmVzdG8pXFwvKFtcXHdcXC5dKykvaSwgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAvLyBQcmVzdG9cbiAgICAgICAgICAgIC8od2Via2l0fHRyaWRlbnR8bmV0ZnJvbnR8bmV0c3VyZnxhbWF5YXxseW54fHczbXxnb2FubmF8c2Vydm8pXFwvKFtcXHdcXC5dKykvaSwgLy8gV2ViS2l0L1RyaWRlbnQvTmV0RnJvbnQvTmV0U3VyZi9BbWF5YS9MeW54L3czbS9Hb2FubmEvU2Vydm9cbiAgICAgICAgICAgIC9la2lvaChmbG93KVxcLyhbXFx3XFwuXSspL2ksICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgLy8gRmxvd1xuICAgICAgICAgICAgLyhraHRtbHx0YXNtYW58bGlua3MpW1xcLyBdXFwoPyhbXFx3XFwuXSspL2ksICAgICAgICAgICAgICAgICAgICAgICAgICAgLy8gS0hUTUwvVGFzbWFuL0xpbmtzXG4gICAgICAgICAgICAvKGljYWIpW1xcLyBdKFsyM11cXC5bXFxkXFwuXSspL2ksICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAvLyBpQ2FiXG5cbiAgICAgICAgICAgIC9cXGIobGlid2ViKS9pICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgIC8vIExpYldlYlxuICAgICAgICAgICAgXSwgW05BTUUsIFZFUlNJT05dLCBbXG4gICAgICAgICAgICAvbGFkeWJpcmRcXC8vaVxuICAgICAgICAgICAgXSwgW1tOQU1FLCAnTGliV2ViJ11dLCBbXG5cbiAgICAgICAgICAgIC9ydlxcOihbXFx3XFwuXXsxLDl9KVxcYi4rKGdlY2tvKS9pICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgIC8vIEdlY2tvXG4gICAgICAgICAgICBdLCBbVkVSU0lPTiwgTkFNRV1cbiAgICAgICAgXSxcblxuICAgICAgICBvcyA6IFtbXG5cbiAgICAgICAgICAgIC8vIFdpbmRvd3NcbiAgICAgICAgICAgIC9taWNyb3NvZnQgKHdpbmRvd3MpICh2aXN0YXx4cCkvaSAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgLy8gV2luZG93cyAoaVR1bmVzKVxuICAgICAgICAgICAgXSwgW05BTUUsIFZFUlNJT05dLCBbXG4gICAgICAgICAgICAvKHdpbmRvd3MgKD86cGhvbmUoPzogb3MpP3xtb2JpbGV8aW90KSlbXFwvIF0/KFtcXGRcXC5cXHcgXSopL2kgICAgICAgICAvLyBXaW5kb3dzIFBob25lXG4gICAgICAgICAgICBdLCBbTkFNRSwgW1ZFUlNJT04sIHN0ck1hcHBlciwgd2luZG93c1ZlcnNpb25NYXBdXSwgW1xuICAgICAgICAgICAgL3dpbmRvd3MgbnQgNlxcLjI7IChhcm0pL2ksICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgLy8gV2luZG93cyBSVFxuICAgICAgICAgICAgL3dpbmRvd3NbXFwvIF0oW250Y2VcXGRcXC4gXStcXHcpKD8hLit4Ym94KS9pLFxuICAgICAgICAgICAgLyg/Ondpbig/PTN8OXxuKXx3aW4gOXggKShbbnRcXGRcXC5dKykvaVxuICAgICAgICAgICAgXSwgW1tWRVJTSU9OLCBzdHJNYXBwZXIsIHdpbmRvd3NWZXJzaW9uTWFwXSwgW05BTUUsICdXaW5kb3dzJ11dLCBbXG5cbiAgICAgICAgICAgIC8vIGlPUy9tYWNPU1xuICAgICAgICAgICAgL1thZGVoaW1ub3BdezQsN31cXGIoPzouKm9zIChbXFx3XSspIGxpa2UgbWFjfDsgb3BlcmEpL2ksICAgICAgICAgICAgIC8vIGlPU1xuICAgICAgICAgICAgLyg/OmlvcztmYnN2XFwvfGlwaG9uZS4raW9zW1xcLyBdKShbXFxkXFwuXSspL2ksXG4gICAgICAgICAgICAvY2ZuZXR3b3JrXFwvLitkYXJ3aW4vaVxuICAgICAgICAgICAgXSwgW1tWRVJTSU9OLCAvXy9nLCAnLiddLCBbTkFNRSwgJ2lPUyddXSwgW1xuICAgICAgICAgICAgLyhtYWMgb3MgeCkgPyhbXFx3XFwuIF0qKS9pLFxuICAgICAgICAgICAgLyhtYWNpbnRvc2h8bWFjX3Bvd2VycGNcXGIpKD8hLitoYWlrdSkvaSAgICAgICAgICAgICAgICAgICAgICAgICAgICAgLy8gTWFjIE9TXG4gICAgICAgICAgICBdLCBbW05BTUUsIE1BQ19PU10sIFtWRVJTSU9OLCAvXy9nLCAnLiddXSwgW1xuXG4gICAgICAgICAgICAvLyBNb2JpbGUgT1Nlc1xuICAgICAgICAgICAgL2Ryb2lkIChbXFx3XFwuXSspXFxiLisoYW5kcm9pZFstIF14ODZ8aGFybW9ueW9zKS9pICAgICAgICAgICAgICAgICAgICAvLyBBbmRyb2lkLXg4Ni9IYXJtb255T1NcbiAgICAgICAgICAgIF0sIFtWRVJTSU9OLCBOQU1FXSwgWyAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgXG4gICAgICAgICAgICAvKHVidW50dSkgKFtcXHdcXC5dKykgbGlrZSBhbmRyb2lkL2kgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgLy8gVWJ1bnR1IFRvdWNoXG4gICAgICAgICAgICBdLCBbW05BTUUsIC8oLispLywgJyQxIFRvdWNoJ10sIFZFUlNJT05dLCBbXG4gICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgIC8vIEFuZHJvaWQvQmxhY2tiZXJyeS9XZWJPUy9RTlgvQmFkYS9SSU0vS2FpT1MvTWFlbW8vTWVlR28vUzQwL1NhaWxmaXNoIE9TL09wZW5IYXJtb255L1RpemVuXG4gICAgICAgICAgICAvKGFuZHJvaWR8YmFkYXxibGFja2JlcnJ5fGthaW9zfG1hZW1vfG1lZWdvfG9wZW5oYXJtb255fHFueHxyaW0gdGFibGV0IG9zfHNhaWxmaXNofHNlcmllczQwfHN5bWJpYW58dGl6ZW58d2Vib3MpXFx3KlstXFwvOyBdPyhbXFxkXFwuXSopL2lcbiAgICAgICAgICAgIF0sIFtOQU1FLCBWRVJTSU9OXSwgW1xuICAgICAgICAgICAgL1xcKGJiKDEwKTsvaSAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgLy8gQmxhY2tCZXJyeSAxMFxuICAgICAgICAgICAgXSwgW1ZFUlNJT04sIFtOQU1FLCBCTEFDS0JFUlJZXV0sIFtcbiAgICAgICAgICAgIC8oPzpzeW1iaWFuID9vc3xzeW1ib3N8czYwKD89Oyl8c2VyaWVzID82MClbLVxcLyBdPyhbXFx3XFwuXSopL2kgICAgICAgLy8gU3ltYmlhblxuICAgICAgICAgICAgXSwgW1ZFUlNJT04sIFtOQU1FLCAnU3ltYmlhbiddXSwgW1xuICAgICAgICAgICAgL21vemlsbGFcXC9bXFxkXFwuXSsgXFwoKD86bW9iaWxlfHRhYmxldHx0dnxtb2JpbGU7IFtcXHcgXSspOyBydjouKyBnZWNrb1xcLyhbXFx3XFwuXSspL2kgLy8gRmlyZWZveCBPU1xuICAgICAgICAgICAgXSwgW1ZFUlNJT04sIFtOQU1FLCBGSVJFRk9YKycgT1MnXV0sIFtcbiAgICAgICAgICAgIC93ZWIwczsuK3J0KHR2KS9pLFxuICAgICAgICAgICAgL1xcYig/OmhwKT93b3MoPzpicm93c2VyKT9cXC8oW1xcd1xcLl0rKS9pICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgLy8gV2ViT1NcbiAgICAgICAgICAgIF0sIFtWRVJTSU9OLCBbTkFNRSwgJ3dlYk9TJ11dLCBbXG4gICAgICAgICAgICAvd2F0Y2goPzogP29zWyxcXC9dfFxcZCxcXGRcXC8pKFtcXGRcXC5dKykvaSAgICAgICAgICAgICAgICAgICAgICAgICAgICAgIC8vIHdhdGNoT1NcbiAgICAgICAgICAgIF0sIFtWRVJTSU9OLCBbTkFNRSwgJ3dhdGNoT1MnXV0sIFtcblxuICAgICAgICAgICAgLy8gR29vZ2xlIENocm9tZWNhc3RcbiAgICAgICAgICAgIC9jcmtleVxcLyhbXFxkXFwuXSspL2kgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgLy8gR29vZ2xlIENocm9tZWNhc3RcbiAgICAgICAgICAgIF0sIFtWRVJTSU9OLCBbTkFNRSwgQ0hST01FKydjYXN0J11dLCBbXG4gICAgICAgICAgICAvKGNyb3MpIFtcXHddKyg/OlxcKXwgKFtcXHdcXC5dKylcXGIpL2kgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgLy8gQ2hyb21pdW0gT1NcbiAgICAgICAgICAgIF0sIFtbTkFNRSwgQ0hST01JVU1fT1NdLCBWRVJTSU9OXSxbXG5cbiAgICAgICAgICAgIC8vIFNtYXJ0IFRWc1xuICAgICAgICAgICAgL3BhbmFzb25pYzsodmllcmEpL2ksICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAvLyBQYW5hc29uaWMgVmllcmFcbiAgICAgICAgICAgIC8obmV0cmFuZ2UpbW1oL2ksICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgLy8gTmV0cmFuZ2VcbiAgICAgICAgICAgIC8obmV0dHYpXFwvKFxcZCtcXC5bXFx3XFwuXSspL2ksICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAvLyBOZXRUVlxuXG4gICAgICAgICAgICAvLyBDb25zb2xlXG4gICAgICAgICAgICAvKG5pbnRlbmRvfHBsYXlzdGF0aW9uKSAoW3dpZHMzNDVwb3J0YWJsZXZ1Y2hdKykvaSwgICAgICAgICAgICAgICAgIC8vIE5pbnRlbmRvL1BsYXlzdGF0aW9uXG4gICAgICAgICAgICAvKHhib3gpOyAreGJveCAoW15cXCk7XSspL2ksICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAvLyBNaWNyb3NvZnQgWGJveCAoMzYwLCBPbmUsIFgsIFMsIFNlcmllcyBYLCBTZXJpZXMgUylcblxuICAgICAgICAgICAgLy8gT3RoZXJcbiAgICAgICAgICAgIC9cXGIoam9saXxwYWxtKVxcYiA/KD86b3MpP1xcLz8oW1xcd1xcLl0qKS9pLCAgICAgICAgICAgICAgICAgICAgICAgICAgICAvLyBKb2xpL1BhbG1cbiAgICAgICAgICAgIC8obWludClbXFwvXFwoXFwpIF0/KFxcdyopL2ksICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgIC8vIE1pbnRcbiAgICAgICAgICAgIC8obWFnZWlhfHZlY3RvcmxpbnV4KVs7IF0vaSwgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgLy8gTWFnZWlhL1ZlY3RvckxpbnV4XG4gICAgICAgICAgICAvKFtreGxuXT91YnVudHV8ZGViaWFufHN1c2V8b3BlbnN1c2V8Z2VudG9vfGFyY2goPz0gbGludXgpfHNsYWNrd2FyZXxmZWRvcmF8bWFuZHJpdmF8Y2VudG9zfHBjbGludXhvc3xyZWQgP2hhdHx6ZW53YWxrfGxpbnB1c3xyYXNwYmlhbnxwbGFuIDl8bWluaXh8cmlzYyBvc3xjb250aWtpfGRlZXBpbnxtYW5qYXJvfGVsZW1lbnRhcnkgb3N8c2FiYXlvbnxsaW5zcGlyZSkoPzogZ251XFwvbGludXgpPyg/OiBlbnRlcnByaXNlKT8oPzpbLSBdbGludXgpPyg/Oi1nbnUpP1stXFwvIF0/KD8hY2hyb218cGFja2FnZSkoWy1cXHdcXC5dKikvaSxcbiAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgLy8gVWJ1bnR1L0RlYmlhbi9TVVNFL0dlbnRvby9BcmNoL1NsYWNrd2FyZS9GZWRvcmEvTWFuZHJpdmEvQ2VudE9TL1BDTGludXhPUy9SZWRIYXQvWmVud2Fsay9MaW5wdXMvUmFzcGJpYW4vUGxhbjkvTWluaXgvUklTQ09TL0NvbnRpa2kvRGVlcGluL01hbmphcm8vZWxlbWVudGFyeS9TYWJheW9uL0xpbnNwaXJlXG4gICAgICAgICAgICAvKGh1cmR8bGludXgpKD86IGFybVxcdyp8IHg4Nlxcdyp8ID8pKFtcXHdcXC5dKikvaSwgICAgICAgICAgICAgICAgICAgICAvLyBIdXJkL0xpbnV4XG4gICAgICAgICAgICAvKGdudSkgPyhbXFx3XFwuXSopL2ksICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgLy8gR05VXG4gICAgICAgICAgICAvXFxiKFstZnJlbnRvcGNnaHNdezAsNX1ic2R8ZHJhZ29uZmx5KVtcXC8gXT8oPyFhbWR8W2l4MzQ2XXsxLDJ9ODYpKFtcXHdcXC5dKikvaSwgLy8gRnJlZUJTRC9OZXRCU0QvT3BlbkJTRC9QQy1CU0QvR2hvc3RCU0QvRHJhZ29uRmx5XG4gICAgICAgICAgICAvKGhhaWt1KSAoXFx3KykvaSAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAvLyBIYWlrdVxuICAgICAgICAgICAgXSwgW05BTUUsIFZFUlNJT05dLCBbXG4gICAgICAgICAgICAvKHN1bm9zKSA/KFtcXHdcXC5cXGRdKikvaSAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgIC8vIFNvbGFyaXNcbiAgICAgICAgICAgIF0sIFtbTkFNRSwgJ1NvbGFyaXMnXSwgVkVSU0lPTl0sIFtcbiAgICAgICAgICAgIC8oKD86b3Blbik/c29sYXJpcylbLVxcLyBdPyhbXFx3XFwuXSopL2ksICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgLy8gU29sYXJpc1xuICAgICAgICAgICAgLyhhaXgpICgoXFxkKSg/PVxcLnxcXCl8IClbXFx3XFwuXSkqL2ksICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgIC8vIEFJWFxuICAgICAgICAgICAgL1xcYihiZW9zfG9zXFwvMnxhbWlnYW9zfG1vcnBob3N8b3BlbnZtc3xmdWNoc2lhfGhwLXV4fHNlcmVuaXR5b3MpL2ksIC8vIEJlT1MvT1MyL0FtaWdhT1MvTW9ycGhPUy9PcGVuVk1TL0Z1Y2hzaWEvSFAtVVgvU2VyZW5pdHlPU1xuICAgICAgICAgICAgLyh1bml4KSA/KFtcXHdcXC5dKikvaSAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgIC8vIFVOSVhcbiAgICAgICAgICAgIF0sIFtOQU1FLCBWRVJTSU9OXVxuICAgICAgICBdXG4gICAgfTtcblxuICAgIC8vLy8vLy8vLy8vLy8vLy8vXG4gICAgLy8gQ29uc3RydWN0b3JcbiAgICAvLy8vLy8vLy8vLy8vLy8vXG5cbiAgICB2YXIgVUFQYXJzZXIgPSBmdW5jdGlvbiAodWEsIGV4dGVuc2lvbnMpIHtcblxuICAgICAgICBpZiAodHlwZW9mIHVhID09PSBPQkpfVFlQRSkge1xuICAgICAgICAgICAgZXh0ZW5zaW9ucyA9IHVhO1xuICAgICAgICAgICAgdWEgPSB1bmRlZmluZWQ7XG4gICAgICAgIH1cblxuICAgICAgICBpZiAoISh0aGlzIGluc3RhbmNlb2YgVUFQYXJzZXIpKSB7XG4gICAgICAgICAgICByZXR1cm4gbmV3IFVBUGFyc2VyKHVhLCBleHRlbnNpb25zKS5nZXRSZXN1bHQoKTtcbiAgICAgICAgfVxuXG4gICAgICAgIHZhciBfbmF2aWdhdG9yID0gKHR5cGVvZiB3aW5kb3cgIT09IFVOREVGX1RZUEUgJiYgd2luZG93Lm5hdmlnYXRvcikgPyB3aW5kb3cubmF2aWdhdG9yIDogdW5kZWZpbmVkO1xuICAgICAgICB2YXIgX3VhID0gdWEgfHwgKChfbmF2aWdhdG9yICYmIF9uYXZpZ2F0b3IudXNlckFnZW50KSA/IF9uYXZpZ2F0b3IudXNlckFnZW50IDogRU1QVFkpO1xuICAgICAgICB2YXIgX3VhY2ggPSAoX25hdmlnYXRvciAmJiBfbmF2aWdhdG9yLnVzZXJBZ2VudERhdGEpID8gX25hdmlnYXRvci51c2VyQWdlbnREYXRhIDogdW5kZWZpbmVkO1xuICAgICAgICB2YXIgX3JneG1hcCA9IGV4dGVuc2lvbnMgPyBleHRlbmQocmVnZXhlcywgZXh0ZW5zaW9ucykgOiByZWdleGVzO1xuICAgICAgICB2YXIgX2lzU2VsZk5hdiA9IF9uYXZpZ2F0b3IgJiYgX25hdmlnYXRvci51c2VyQWdlbnQgPT0gX3VhO1xuXG4gICAgICAgIHRoaXMuZ2V0QnJvd3NlciA9IGZ1bmN0aW9uICgpIHtcbiAgICAgICAgICAgIHZhciBfYnJvd3NlciA9IHt9O1xuICAgICAgICAgICAgX2Jyb3dzZXJbTkFNRV0gPSB1bmRlZmluZWQ7XG4gICAgICAgICAgICBfYnJvd3NlcltWRVJTSU9OXSA9IHVuZGVmaW5lZDtcbiAgICAgICAgICAgIHJneE1hcHBlci5jYWxsKF9icm93c2VyLCBfdWEsIF9yZ3htYXAuYnJvd3Nlcik7XG4gICAgICAgICAgICBfYnJvd3NlcltNQUpPUl0gPSBtYWpvcml6ZShfYnJvd3NlcltWRVJTSU9OXSk7XG4gICAgICAgICAgICAvLyBCcmF2ZS1zcGVjaWZpYyBkZXRlY3Rpb25cbiAgICAgICAgICAgIGlmIChfaXNTZWxmTmF2ICYmIF9uYXZpZ2F0b3IgJiYgX25hdmlnYXRvci5icmF2ZSAmJiB0eXBlb2YgX25hdmlnYXRvci5icmF2ZS5pc0JyYXZlID09IEZVTkNfVFlQRSkge1xuICAgICAgICAgICAgICAgIF9icm93c2VyW05BTUVdID0gJ0JyYXZlJztcbiAgICAgICAgICAgIH1cbiAgICAgICAgICAgIHJldHVybiBfYnJvd3NlcjtcbiAgICAgICAgfTtcbiAgICAgICAgdGhpcy5nZXRDUFUgPSBmdW5jdGlvbiAoKSB7XG4gICAgICAgICAgICB2YXIgX2NwdSA9IHt9O1xuICAgICAgICAgICAgX2NwdVtBUkNISVRFQ1RVUkVdID0gdW5kZWZpbmVkO1xuICAgICAgICAgICAgcmd4TWFwcGVyLmNhbGwoX2NwdSwgX3VhLCBfcmd4bWFwLmNwdSk7XG4gICAgICAgICAgICByZXR1cm4gX2NwdTtcbiAgICAgICAgfTtcbiAgICAgICAgdGhpcy5nZXREZXZpY2UgPSBmdW5jdGlvbiAoKSB7XG4gICAgICAgICAgICB2YXIgX2RldmljZSA9IHt9O1xuICAgICAgICAgICAgX2RldmljZVtWRU5ET1JdID0gdW5kZWZpbmVkO1xuICAgICAgICAgICAgX2RldmljZVtNT0RFTF0gPSB1bmRlZmluZWQ7XG4gICAgICAgICAgICBfZGV2aWNlW1RZUEVdID0gdW5kZWZpbmVkO1xuICAgICAgICAgICAgcmd4TWFwcGVyLmNhbGwoX2RldmljZSwgX3VhLCBfcmd4bWFwLmRldmljZSk7XG4gICAgICAgICAgICBpZiAoX2lzU2VsZk5hdiAmJiAhX2RldmljZVtUWVBFXSAmJiBfdWFjaCAmJiBfdWFjaC5tb2JpbGUpIHtcbiAgICAgICAgICAgICAgICBfZGV2aWNlW1RZUEVdID0gTU9CSUxFO1xuICAgICAgICAgICAgfVxuICAgICAgICAgICAgLy8gaVBhZE9TLXNwZWNpZmljIGRldGVjdGlvbjogaWRlbnRpZmllZCBhcyBNYWMsIGJ1dCBoYXMgc29tZSBpT1Mtb25seSBwcm9wZXJ0aWVzXG4gICAgICAgICAgICBpZiAoX2lzU2VsZk5hdiAmJiBfZGV2aWNlW01PREVMXSA9PSAnTWFjaW50b3NoJyAmJiBfbmF2aWdhdG9yICYmIHR5cGVvZiBfbmF2aWdhdG9yLnN0YW5kYWxvbmUgIT09IFVOREVGX1RZUEUgJiYgX25hdmlnYXRvci5tYXhUb3VjaFBvaW50cyAmJiBfbmF2aWdhdG9yLm1heFRvdWNoUG9pbnRzID4gMikge1xuICAgICAgICAgICAgICAgIF9kZXZpY2VbTU9ERUxdID0gJ2lQYWQnO1xuICAgICAgICAgICAgICAgIF9kZXZpY2VbVFlQRV0gPSBUQUJMRVQ7XG4gICAgICAgICAgICB9XG4gICAgICAgICAgICByZXR1cm4gX2RldmljZTtcbiAgICAgICAgfTtcbiAgICAgICAgdGhpcy5nZXRFbmdpbmUgPSBmdW5jdGlvbiAoKSB7XG4gICAgICAgICAgICB2YXIgX2VuZ2luZSA9IHt9O1xuICAgICAgICAgICAgX2VuZ2luZVtOQU1FXSA9IHVuZGVmaW5lZDtcbiAgICAgICAgICAgIF9lbmdpbmVbVkVSU0lPTl0gPSB1bmRlZmluZWQ7XG4gICAgICAgICAgICByZ3hNYXBwZXIuY2FsbChfZW5naW5lLCBfdWEsIF9yZ3htYXAuZW5naW5lKTtcbiAgICAgICAgICAgIHJldHVybiBfZW5naW5lO1xuICAgICAgICB9O1xuICAgICAgICB0aGlzLmdldE9TID0gZnVuY3Rpb24gKCkge1xuICAgICAgICAgICAgdmFyIF9vcyA9IHt9O1xuICAgICAgICAgICAgX29zW05BTUVdID0gdW5kZWZpbmVkO1xuICAgICAgICAgICAgX29zW1ZFUlNJT05dID0gdW5kZWZpbmVkO1xuICAgICAgICAgICAgcmd4TWFwcGVyLmNhbGwoX29zLCBfdWEsIF9yZ3htYXAub3MpO1xuICAgICAgICAgICAgaWYgKF9pc1NlbGZOYXYgJiYgIV9vc1tOQU1FXSAmJiBfdWFjaCAmJiBfdWFjaC5wbGF0Zm9ybSAmJiBfdWFjaC5wbGF0Zm9ybSAhPSAnVW5rbm93bicpIHtcbiAgICAgICAgICAgICAgICBfb3NbTkFNRV0gPSBfdWFjaC5wbGF0Zm9ybSAgXG4gICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAucmVwbGFjZSgvY2hyb21lIG9zL2ksIENIUk9NSVVNX09TKVxuICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgLnJlcGxhY2UoL21hY29zL2ksIE1BQ19PUyk7ICAgICAgICAgICAvLyBiYWNrd2FyZCBjb21wYXRpYmlsaXR5XG4gICAgICAgICAgICB9XG4gICAgICAgICAgICByZXR1cm4gX29zO1xuICAgICAgICB9O1xuICAgICAgICB0aGlzLmdldFJlc3VsdCA9IGZ1bmN0aW9uICgpIHtcbiAgICAgICAgICAgIHJldHVybiB7XG4gICAgICAgICAgICAgICAgdWEgICAgICA6IHRoaXMuZ2V0VUEoKSxcbiAgICAgICAgICAgICAgICBicm93c2VyIDogdGhpcy5nZXRCcm93c2VyKCksXG4gICAgICAgICAgICAgICAgZW5naW5lICA6IHRoaXMuZ2V0RW5naW5lKCksXG4gICAgICAgICAgICAgICAgb3MgICAgICA6IHRoaXMuZ2V0T1MoKSxcbiAgICAgICAgICAgICAgICBkZXZpY2UgIDogdGhpcy5nZXREZXZpY2UoKSxcbiAgICAgICAgICAgICAgICBjcHUgICAgIDogdGhpcy5nZXRDUFUoKVxuICAgICAgICAgICAgfTtcbiAgICAgICAgfTtcbiAgICAgICAgdGhpcy5nZXRVQSA9IGZ1bmN0aW9uICgpIHtcbiAgICAgICAgICAgIHJldHVybiBfdWE7XG4gICAgICAgIH07XG4gICAgICAgIHRoaXMuc2V0VUEgPSBmdW5jdGlvbiAodWEpIHtcbiAgICAgICAgICAgIF91YSA9ICh0eXBlb2YgdWEgPT09IFNUUl9UWVBFICYmIHVhLmxlbmd0aCA+IFVBX01BWF9MRU5HVEgpID8gdHJpbSh1YSwgVUFfTUFYX0xFTkdUSCkgOiB1YTtcbiAgICAgICAgICAgIHJldHVybiB0aGlzO1xuICAgICAgICB9O1xuICAgICAgICB0aGlzLnNldFVBKF91YSk7XG4gICAgICAgIHJldHVybiB0aGlzO1xuICAgIH07XG5cbiAgICBVQVBhcnNlci5WRVJTSU9OID0gTElCVkVSU0lPTjtcbiAgICBVQVBhcnNlci5CUk9XU0VSID0gIGVudW1lcml6ZShbTkFNRSwgVkVSU0lPTiwgTUFKT1JdKTtcbiAgICBVQVBhcnNlci5DUFUgPSBlbnVtZXJpemUoW0FSQ0hJVEVDVFVSRV0pO1xuICAgIFVBUGFyc2VyLkRFVklDRSA9IGVudW1lcml6ZShbTU9ERUwsIFZFTkRPUiwgVFlQRSwgQ09OU09MRSwgTU9CSUxFLCBTTUFSVFRWLCBUQUJMRVQsIFdFQVJBQkxFLCBFTUJFRERFRF0pO1xuICAgIFVBUGFyc2VyLkVOR0lORSA9IFVBUGFyc2VyLk9TID0gZW51bWVyaXplKFtOQU1FLCBWRVJTSU9OXSk7XG5cbiAgICAvLy8vLy8vLy8vL1xuICAgIC8vIEV4cG9ydFxuICAgIC8vLy8vLy8vLy9cblxuICAgIC8vIGNoZWNrIGpzIGVudmlyb25tZW50XG4gICAgaWYgKHR5cGVvZihleHBvcnRzKSAhPT0gVU5ERUZfVFlQRSkge1xuICAgICAgICAvLyBub2RlanMgZW52XG4gICAgICAgIGlmICh0eXBlb2YgbW9kdWxlICE9PSBVTkRFRl9UWVBFICYmIG1vZHVsZS5leHBvcnRzKSB7XG4gICAgICAgICAgICBleHBvcnRzID0gbW9kdWxlLmV4cG9ydHMgPSBVQVBhcnNlcjtcbiAgICAgICAgfVxuICAgICAgICBleHBvcnRzLlVBUGFyc2VyID0gVUFQYXJzZXI7XG4gICAgfSBlbHNlIHtcbiAgICAgICAgLy8gcmVxdWlyZWpzIGVudiAob3B0aW9uYWwpXG4gICAgICAgIGlmICh0eXBlb2YoZGVmaW5lKSA9PT0gRlVOQ19UWVBFICYmIGRlZmluZS5hbWQpIHtcbiAgICAgICAgICAgIGRlZmluZShmdW5jdGlvbiAoKSB7XG4gICAgICAgICAgICAgICAgcmV0dXJuIFVBUGFyc2VyO1xuICAgICAgICAgICAgfSk7XG4gICAgICAgIH0gZWxzZSBpZiAodHlwZW9mIHdpbmRvdyAhPT0gVU5ERUZfVFlQRSkge1xuICAgICAgICAgICAgLy8gYnJvd3NlciBlbnZcbiAgICAgICAgICAgIHdpbmRvdy5VQVBhcnNlciA9IFVBUGFyc2VyO1xuICAgICAgICB9XG4gICAgfVxuXG4gICAgLy8galF1ZXJ5L1plcHRvIHNwZWNpZmljIChvcHRpb25hbClcbiAgICAvLyBOb3RlOlxuICAgIC8vICAgSW4gQU1EIGVudiB0aGUgZ2xvYmFsIHNjb3BlIHNob3VsZCBiZSBrZXB0IGNsZWFuLCBidXQgalF1ZXJ5IGlzIGFuIGV4Y2VwdGlvbi5cbiAgICAvLyAgIGpRdWVyeSBhbHdheXMgZXhwb3J0cyB0byBnbG9iYWwgc2NvcGUsIHVubGVzcyBqUXVlcnkubm9Db25mbGljdCh0cnVlKSBpcyB1c2VkLFxuICAgIC8vICAgYW5kIHdlIHNob3VsZCBjYXRjaCB0aGF0LlxuICAgIHZhciAkID0gdHlwZW9mIHdpbmRvdyAhPT0gVU5ERUZfVFlQRSAmJiAod2luZG93LmpRdWVyeSB8fCB3aW5kb3cuWmVwdG8pO1xuICAgIGlmICgkICYmICEkLnVhKSB7XG4gICAgICAgIHZhciBwYXJzZXIgPSBuZXcgVUFQYXJzZXIoKTtcbiAgICAgICAgJC51YSA9IHBhcnNlci5nZXRSZXN1bHQoKTtcbiAgICAgICAgJC51YS5nZXQgPSBmdW5jdGlvbiAoKSB7XG4gICAgICAgICAgICByZXR1cm4gcGFyc2VyLmdldFVBKCk7XG4gICAgICAgIH07XG4gICAgICAgICQudWEuc2V0ID0gZnVuY3Rpb24gKHVhKSB7XG4gICAgICAgICAgICBwYXJzZXIuc2V0VUEodWEpO1xuICAgICAgICAgICAgdmFyIHJlc3VsdCA9IHBhcnNlci5nZXRSZXN1bHQoKTtcbiAgICAgICAgICAgIGZvciAodmFyIHByb3AgaW4gcmVzdWx0KSB7XG4gICAgICAgICAgICAgICAgJC51YVtwcm9wXSA9IHJlc3VsdFtwcm9wXTtcbiAgICAgICAgICAgIH1cbiAgICAgICAgfTtcbiAgICB9XG5cbn0pKHR5cGVvZiB3aW5kb3cgPT09ICdvYmplY3QnID8gd2luZG93IDogdGhpcyk7XG4iLCIvLyBUaGUgbW9kdWxlIGNhY2hlXG52YXIgX193ZWJwYWNrX21vZHVsZV9jYWNoZV9fID0ge307XG5cbi8vIFRoZSByZXF1aXJlIGZ1bmN0aW9uXG5mdW5jdGlvbiBfX3dlYnBhY2tfcmVxdWlyZV9fKG1vZHVsZUlkKSB7XG5cdC8vIENoZWNrIGlmIG1vZHVsZSBpcyBpbiBjYWNoZVxuXHR2YXIgY2FjaGVkTW9kdWxlID0gX193ZWJwYWNrX21vZHVsZV9jYWNoZV9fW21vZHVsZUlkXTtcblx0aWYgKGNhY2hlZE1vZHVsZSAhPT0gdW5kZWZpbmVkKSB7XG5cdFx0cmV0dXJuIGNhY2hlZE1vZHVsZS5leHBvcnRzO1xuXHR9XG5cdC8vIENyZWF0ZSBhIG5ldyBtb2R1bGUgKGFuZCBwdXQgaXQgaW50byB0aGUgY2FjaGUpXG5cdHZhciBtb2R1bGUgPSBfX3dlYnBhY2tfbW9kdWxlX2NhY2hlX19bbW9kdWxlSWRdID0ge1xuXHRcdC8vIG5vIG1vZHVsZS5pZCBuZWVkZWRcblx0XHQvLyBubyBtb2R1bGUubG9hZGVkIG5lZWRlZFxuXHRcdGV4cG9ydHM6IHt9XG5cdH07XG5cblx0Ly8gRXhlY3V0ZSB0aGUgbW9kdWxlIGZ1bmN0aW9uXG5cdF9fd2VicGFja19tb2R1bGVzX19bbW9kdWxlSWRdLmNhbGwobW9kdWxlLmV4cG9ydHMsIG1vZHVsZSwgbW9kdWxlLmV4cG9ydHMsIF9fd2VicGFja19yZXF1aXJlX18pO1xuXG5cdC8vIFJldHVybiB0aGUgZXhwb3J0cyBvZiB0aGUgbW9kdWxlXG5cdHJldHVybiBtb2R1bGUuZXhwb3J0cztcbn1cblxuIiwiX193ZWJwYWNrX3JlcXVpcmVfXy5hbWRPID0ge307IiwiIiwiLy8gc3RhcnR1cFxuLy8gTG9hZCBlbnRyeSBtb2R1bGUgYW5kIHJldHVybiBleHBvcnRzXG4vLyBUaGlzIGVudHJ5IG1vZHVsZSBpcyByZWZlcmVuY2VkIGJ5IG90aGVyIG1vZHVsZXMgc28gaXQgY2FuJ3QgYmUgaW5saW5lZFxudmFyIF9fd2VicGFja19leHBvcnRzX18gPSBfX3dlYnBhY2tfcmVxdWlyZV9fKFwiLi9pbmRleC50c1wiKTtcbiIsIiJdLCJuYW1lcyI6W10sInNvdXJjZVJvb3QiOiIifQ==
+//# sourceMappingURL=bundle.js.map

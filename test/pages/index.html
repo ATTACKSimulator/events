@@ -1,0 +1,45 @@
+<!doctype html>
+<html lang="en">
+<head>
+	<meta charset="UTF-8" />
+	<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+	<title>Tutorial test fixtures</title>
+	<style>
+		* { box-sizing: border-box; }
+		body { font-family: "Segoe UI", Roboto, Arial, sans-serif; background: #f7f8fa; margin: 0; padding: 40px 20px; }
+		.wrap { max-width: 760px; margin: 0 auto; }
+		h1 { font-size: 24px; }
+		p.hint { color: #5a6270; font-size: 14px; }
+		.fixture { background: #fff; border-radius: 10px; box-shadow: 0 1px 6px rgba(0,0,0,.08); padding: 20px 24px; margin-bottom: 16px; }
+		.fixture h2 { font-size: 17px; margin: 0 0 4px; }
+		.fixture h2 a { color: #2557d6; text-decoration: none; }
+		.fixture p { color: #5a6270; font-size: 13.5px; margin: 0 0 10px; }
+		.locales a { display: inline-block; font-size: 12px; font-weight: 600; color: #2557d6; background: #eef2fd; border-radius: 999px; padding: 4px 10px; margin: 0 6px 6px 0; text-decoration: none; }
+	</style>
+</head>
+<body>
+	<div class="wrap">
+		<h1>Tutorial test fixtures</h1>
+		<p class="hint">Build the bundle first (<code>npm run build</code>), then open a fixture. Add <code>&amp;skippable=false</code> to hide the Skip link. Each locale chip opens the fixture with that <code>locale</code> parameter.</p>
+		<div id="fixtures"></div>
+	</div>
+	<script>
+		const fixtures = [
+			{ file: "login.html", name: "Login (credential harvesting)", desc: "Password form + urgency banner + display-text-mismatch link. Submit the form or click the button to open the tutorial." },
+			{ file: "fraud.html", name: "Fraud (credit card)", desc: "Card form with cc-* autocomplete + urgency copy. cc_form takes precedence over password_form." },
+			{ file: "malware.html", name: "Malware (download)", desc: "Download button with .exe href and a .zip link. Click a download link to open the tutorial." },
+			{ file: "fake.html", name: "Fake page (no form)", desc: "Prize page with a CTA button and no form. Classified as fake_page." },
+			{ file: "permissions.html", name: "Permissions (mic/webcam/…)", desc: "Manually triggers permission events to show the per-permission steps (mic, webcam, location, notifications, clipboard)." },
+			{ file: "messy.html", name: "Messy clone (real-world markup)", desc: "Microsoft-lookalike with NO &lt;form&gt;, a type=text password field, randomised class names, a &lt;div&gt; submit button and urgency text split across spans. Proves detection doesn't depend on clean HTML." },
+		];
+		const locales = ["en-US", "ro-RO", "es-ES", "ca-ES", "es-LATAM", "pt-BR", "pt-PT", "fr-FR", "de-DE", "el-GR"];
+		document.getElementById("fixtures").innerHTML = fixtures.map(f => `
+			<div class="fixture">
+				<h2><a href="${f.file}">${f.name}</a></h2>
+				<p>${f.desc}</p>
+				<div class="locales">${locales.map(l => `<a href="${f.file}?locale=${encodeURIComponent(l)}">${l}</a>`).join("")}</div>
+			</div>
+		`).join("");
+	</script>
+</body>
+</html>

@@ -28,6 +28,15 @@ import Logger from "./Logger";
 import IOptions from "./intefaces/IOption";
 import ICampaignInfo from "./intefaces/ICampaignInfo";
 
+import { createTranslator, resolveLocale } from "./i18n";
+import { scanPage } from "./tutorial/AttackDetector";
+import { Tutorial } from "./tutorial/Tutorial";
+import { Detection } from "./tutorial/types";
+
+// How long the overlay gets to prove it is actually on screen before the
+// redirect happens anyway.
+const TUTORIAL_WATCHDOG_MS = 1200;
+
 interface EventSubscription {
 	eventName: string;
 	callback: (event: IEvent) => void;
@@ -69,8 +78,17 @@ export class Manager {
 	private activeEvents: IEvent[];
 	private extraPayload: object = {};
 
-	constructor(remote: Remote, { eventsToInclude = [], eventsToExclude = [], source, redirectUrl, shouldRedirect, extraPayload, debug = false }: IOptions) {
+	private readonly tutorialEnabled: boolean;
+	private readonly tutorialSkippable: boolean;
+	private readonly locale?: string;
+	private tutorial: Tutorial | null = null;
+
+	constructor(remote: Remote, { eventsToInclude = [], eventsToExclude = [], source, redirectUrl, shouldRedirect, extraPayload, debug = false, tutorial = false, tutorialSkippable = true, locale }: IOptions) {
 		this.logger = new Logger(debug);
+
+		this.tutorialEnabled = tutorial;
+		this.tutorialSkippable = tutorialSkippable;
+		this.locale = locale;
 
 		this.sender = new EventSender(remote, this.logger);
 		[this.token, this.campaignInfo] = findCampaignInfo();
@@ -342,7 +360,21 @@ export class Manager {
 		}
 
 		const type = this.findType(activeEvent, event);
-		this.triggerSubscription(activeEvent);
+
+		// Scan the page before anything is awaited: the page's own handlers run
+		// first and often replace the form with a spinner, which would leave
+		// nothing to explain by the time the request finishes.
+		const detection = activeEvent.redirectOnFinish && this.shouldRedirect && this.tutorialEnabled
+			? this.scanSafely(activeEvent)
+			: null;
+
+		try {
+			// A throwing subscriber must never strand the victim: the original
+			// action was already cancelled by preventDefault above.
+			this.triggerSubscription(activeEvent);
+		} catch (e) {
+			this.logger.error(e);
+		}
 
 		try {
 			const browserInfo = await this.browserInfoPromise;
@@ -357,9 +389,78 @@ export class Manager {
 			this.logger.error(e);
 		} finally {
 			if (activeEvent.redirectOnFinish && this.shouldRedirect) {
-				window.location.href = `${this.redirectUrl}${window.location.search}`;
+				this.finishEvent(detection);
 			}
 		}
+	}
+
+	/**
+	 * Scans the page for the tutorial without ever letting a scan failure
+	 * escape into the redirect path.
+	 *
+	 * @param {IEvent} activeEvent - The event being executed.
+	 * @returns {Detection | null} - The detection, or null if scanning failed.
+	 */
+	private scanSafely(activeEvent: IEvent): Detection | null {
+		try {
+			// The campaign token may name the brand its landing page imitates;
+			// otherwise the page itself is inspected.
+			return scanPage(activeEvent.name, document, this.campaignInfo?.ats_brand);
+		} catch (e) {
+			this.logger.error(e);
+			return null;
+		}
+	}
+
+	/**
+	 * Finishes a redirecting event: opens the educational tutorial when it
+	 * is enabled (the redirect then happens once the user completes or
+	 * skips it), otherwise redirects immediately.
+	 *
+	 * @param {Detection | null} detection - The page scan taken before sending.
+	 */
+	private finishEvent(detection: Detection | null): void {
+		if (!this.tutorialEnabled || !detection) {
+			this.performRedirect();
+			return;
+		}
+
+		try {
+			const tutorial = this.getTutorial();
+			if (tutorial.isOpen) {
+				return;
+			}
+
+			tutorial.open(detection);
+
+			// The overlay can be neutered by the page it sits on — hidden by a
+			// CSS rule, removed by a MutationObserver, or left unstyled by a
+			// strict CSP. If it isn't actually on screen shortly after opening,
+			// fall back to the redirect rather than stranding the victim.
+			window.setTimeout(() => {
+				if (!tutorial.isUsable) {
+					this.logger.error("Tutorial overlay is not usable, redirecting instead.");
+					this.performRedirect();
+				}
+			}, TUTORIAL_WATCHDOG_MS);
+		} catch (e) {
+			this.logger.error(e);
+			this.performRedirect();
+		}
+	}
+
+	private performRedirect(): void {
+		window.location.href = `${this.redirectUrl}${window.location.search}`;
+	}
+
+	private getTutorial(): Tutorial {
+		if (!this.tutorial) {
+			const resolved = resolveLocale(this.locale, this.campaignInfo?.ats_locale, navigator.language);
+			this.logger.info(`Tutorial locale: ${resolved}`);
+			this.tutorial = new Tutorial(createTranslator(resolved), this.tutorialSkippable, () => this.performRedirect(), this.logger);
+		}
+
+		return this.tutorial;
 	}
 
 	get supportedEventNames(): string[] {

@@ -1,0 +1,73 @@
+<!doctype html>
+<html lang="ro">
+<head>
+	<meta charset="UTF-8" />
+	<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+	<title>Autentificare</title>
+	<style>
+		* { box-sizing: border-box; margin: 0; }
+		body { font-family: "Segoe UI", Roboto, Arial, sans-serif; background: #eef1f5; min-height: 100vh; }
+		.bar { background: var(--accent, #00539f); color: #fff; padding: 14px 22px; font-weight: 700; letter-spacing: .02em; }
+		.card { background: #fff; width: 400px; max-width: 92vw; margin: 56px auto; padding: 34px; border-radius: 8px; box-shadow: 0 2px 12px rgba(0,0,0,.12); }
+		h1 { font-size: 20px; margin-bottom: 6px; }
+		p.sub { color: #5a6270; font-size: 13.5px; margin-bottom: 20px; }
+		.warn { background: #fff5f5; border-left: 4px solid #d93025; padding: 10px 13px; font-size: 13px; margin-bottom: 20px; line-height: 1.5; }
+		label { display: block; font-size: 12.5px; color: #444; margin-bottom: 5px; }
+		input { width: 100%; padding: 11px; border: 1px solid #cfd6de; border-radius: 5px; margin-bottom: 16px; font-size: 15px; }
+		button { width: 100%; background: var(--accent, #00539f); color: #fff; border: none; border-radius: 5px; padding: 12px; font-size: 15px; font-weight: 600; cursor: pointer; }
+		.chooser { text-align: center; font-size: 12.5px; padding: 10px; color: #5a6270; }
+		.chooser a { color: #2557d6; margin: 0 5px; }
+	</style>
+</head>
+<body>
+	<div class="bar" id="bar"></div>
+	<div class="card">
+		<h1 id="heading"></h1>
+		<p class="sub">Introduceți datele pentru a continua.</p>
+		<div class="warn">Contul dumneavoastră va fi blocat în 24 de ore dacă nu confirmați identitatea.</div>
+		<form>
+			<label>Utilizator</label>
+			<input type="text" name="user" autocomplete="username" />
+			<label>Parolă</label>
+			<input type="password" name="pass" autocomplete="current-password" />
+			<button type="submit">Continuă</button>
+		</form>
+	</div>
+	<div class="chooser" id="chooser"></div>
+
+	<script>
+		// The brand is only ever written as an inline SVG wordmark plus the page
+		// title — exactly how a cloned bank page carries its identity.
+		var BRANDS = {
+			bt: { label: "Banca Transilvania", accent: "#fbb034", ink: "#231f20", title: "Banca Transilvania | Internet Banking" },
+			bt24: { label: "BT24", accent: "#fbb034", ink: "#231f20", title: "BT24 Internet Banking" },
+			ing: { label: "ING", accent: "#ff6200", ink: "#ffffff", title: "ING Home'Bank" },
+			bcr: { label: "BCR", accent: "#00539f", ink: "#ffffff", title: "George by BCR" },
+			sg: { label: "Société Générale", accent: "#e60028", ink: "#ffffff", title: "Société Générale — Espace client" },
+			nbg: { label: "Εθνική Τράπεζα", accent: "#0033a1", ink: "#ffffff", title: "Εθνική Τράπεζα — i-bank" },
+			cgd: { label: "Caixa Geral de Depósitos", accent: "#d40000", ink: "#ffffff", title: "Caixadirecta — CGD" },
+			acme: { label: "Nordvale Kredit", accent: "#2b7a5f", ink: "#ffffff", title: "Nordvale Kredit — Kundenportal" },
+		};
+
+		var params = new URLSearchParams(window.location.search);
+		var key = params.get("brand") || "bt";
+		var brand = BRANDS[key] || BRANDS.bt;
+
+		document.title = brand.title;
+		document.documentElement.style.setProperty("--accent", brand.accent);
+		document.getElementById("heading").textContent = "Autentificare";
+
+		var svg = "<svg xmlns='http://www.w3.org/2000/svg' width='230' height='26'>" +
+			"<text x='0' y='19' font-family='Segoe UI, Arial' font-size='18' font-weight='700' fill='" +
+			encodeURIComponent(brand.ink) + "'>" + brand.label + "</text></svg>";
+		document.getElementById("bar").innerHTML =
+			"<img class='logo' alt='' src=\"data:image/svg+xml," + encodeURIComponent(svg) + "\" />";
+
+		document.getElementById("chooser").innerHTML = "Alege brandul: " + Object.keys(BRANDS).map(function (k) {
+			return "<a href='bank.html?brand=" + k + "'>" + k + "</a>";
+		}).join("");
+	</script>
+	<script src="../../dist/bundle.js"></script>
+	<script src="setup.js"></script>
+</body>
+</html>

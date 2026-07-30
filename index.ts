@@ -12,6 +12,8 @@ const defaultOptions: IOptions = {
 	source: "LP",
 	url: "https://api.attacksimulator.com/v0/client-events",
 	extraPayload: {},
+	tutorial: false,
+	tutorialSkippable: true,
 };
 
 class ATSEvents {

@@ -4,7 +4,11 @@ const TerserPlugin = require("terser-webpack-plugin");
 
 module.exports = {
 	mode: "development",
-	devtool: "inline-source-map",
+	// Separate .map files rather than base64 inlined into the bundle: the
+	// inline form made source maps three quarters of every byte shipped to
+	// a landing page, and browsers only fetch a separate map when devtools
+	// are open.
+	devtool: "source-map",
 	entry: {
 		"bundle": "./index.ts",
 		"bundle.min": "./index.ts",

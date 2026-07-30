@@ -1,0 +1,39 @@
+<!doctype html>
+<html lang="en">
+<head>
+	<meta charset="UTF-8" />
+	<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+	<title>Permission events — Tutorial test</title>
+	<style>
+		* { box-sizing: border-box; margin: 0; }
+		body { font-family: "Segoe UI", Roboto, Arial, sans-serif; background: #f7f8fa; min-height: 100vh; display: flex; flex-direction: column; align-items: center; }
+		.card { background: #fff; border-radius: 10px; box-shadow: 0 2px 10px rgba(0,0,0,.1); width: 440px; max-width: 92vw; padding: 36px; margin-top: 80px; }
+		h1 { font-size: 19px; margin-bottom: 6px; }
+		p { color: #5a6270; font-size: 14px; margin-bottom: 22px; }
+		button { display: block; width: 100%; background: #eef0f6; border: none; border-radius: 8px; padding: 13px; font-size: 14px; font-weight: 600; cursor: pointer; margin-bottom: 10px; text-align: left; }
+		button:hover { background: #e2e5ee; }
+	</style>
+</head>
+<body>
+	<div class="card">
+		<h1>Permission-grab events</h1>
+		<p>Each button manually triggers a permission event, which opens the tutorial's permission variant. (Buttons carry <code>data-ignore</code> so they don't fire button_clicked.)</p>
+		<button type="button" data-ignore onclick="fire('mic_accepted')">🎤 Trigger mic_accepted</button>
+		<button type="button" data-ignore onclick="fire('webcam_accepted')">📷 Trigger webcam_accepted</button>
+		<button type="button" data-ignore onclick="fire('notification_accepted')">🔔 Trigger notification_accepted</button>
+		<button type="button" data-ignore onclick="fire('location_accepted')">📍 Trigger location_accepted</button>
+		<button type="button" data-ignore onclick="fire('clipboard_accepted')">📋 Trigger clipboard_accepted</button>
+	</div>
+	<script src="../../dist/bundle.js"></script>
+	<script src="setup.js"></script>
+	<script>
+		async function fire(name) {
+			try {
+				await window.atsEvents.trigger(name);
+			} catch (e) {
+				console.error(e);
+			}
+		}
+	</script>
+</body>
+</html>
