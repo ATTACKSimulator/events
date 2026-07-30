@@ -8,7 +8,7 @@
   "description": "This package can be used to enable events collection on a landing page and send them back to ATTACK Simulator.",
   "main": "dist/bundle.js",
   "scripts": {
-    "lint": "eslint . --ext .ts",
+    "lint": "eslint .",
     "build": "webpack",
     "start": "webpack --watch",
     "release": "webpack && bumpp --all"
@@ -17,17 +17,32 @@
   "homepage": "https://attacksimulator.com",
   "license": "MIT",
   "devDependencies": {
-    "@typescript-eslint/eslint-plugin": "^5.10.1",
-    "@typescript-eslint/parser": "^5.10.1",
-    "bumpp": "^9.4.1",
-    "eslint": "^8.8.0",
-    "terser-webpack-plugin": "^5.3.0",
-    "ts-loader": "^9.2.6",
-    "typescript": "^4.5.5",
-    "webpack": "5.94.0",
-    "webpack-cli": "^4.9.2"
+    "@eslint/js": "^10.0.1",
+    "@typescript-eslint/eslint-plugin": "^8.65.0",
+    "@typescript-eslint/parser": "^8.65.0",
+    "baseline-browser-mapping": "^2.11.8",
+    "bumpp": "^12.1.1",
+    "eslint": "^10.8.0",
+    "globals": "^17.8.0",
+    "terser-webpack-plugin": "^5.6.1",
+    "ts-loader": "^9.6.2",
+    "typescript": "^6.0.3",
+    "typescript-eslint": "^8.65.0",
+    "webpack": "5.109.2",
+    "webpack-cli": "^7.2.2"
   },
   "dependencies": {
-    "ua-parser-js": "^1.0.2"
+    "ua-parser-js": "^2.0.10"
+  },
+  "overrides": {
+    "@typescript-eslint/parser": {
+      "typescript": "$typescript"
+    },
+    "@typescript-eslint/eslint-plugin": {
+      "typescript": "$typescript"
+    },
+    "@typescript-eslint/typescript-estree": {
+      "typescript": "$typescript"
+    }
   }
 }

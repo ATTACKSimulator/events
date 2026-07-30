@@ -1,4 +1,5 @@
-import parser from "ua-parser-js";
+// ua-parser-js v2 dropped the default export; the class is a named one now.
+import { UAParser } from "ua-parser-js";
 
 const IP_INFO_URL = "https://ipinfo.io/ip";
 const IP_LOOKUP_TIMEOUT = 1500;
@@ -166,7 +167,7 @@ export async function findBrowserInfo(): Promise<BrowserInfo> {
 	const ip = await findClientIp();
 
 	try {
-		const ua = new parser();
+		const ua = new UAParser();
 		return {
 			ip,
 			useragent: window.navigator.userAgent,

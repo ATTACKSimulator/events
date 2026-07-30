@@ -266,7 +266,7 @@ const findSuspiciousLinks = (doc: Document): Finding[] => {
 		}
 
 		const shown = label.replace(/^https?:\/\//i, "").replace(/^www\./i, "").split(/[/?#]/)[0].toLowerCase();
-		let actual = "";
+		let actual: string;
 		try {
 			actual = new URL(node.href, doc.baseURI).hostname.replace(/^www\./i, "").toLowerCase();
 		} catch {

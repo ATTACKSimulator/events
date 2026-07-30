@@ -49,4 +49,7 @@ class ATSEvents {
 	}
 }
 
+// The bundle is consumed as a global (libraryTarget: "var"), so the CommonJS
+// assignment stays; it is declared here rather than pulling in @types/node.
+declare const module: { exports: unknown };
 module.exports = ATSEvents;
