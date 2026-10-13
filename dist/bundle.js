@@ -841,7 +841,15 @@ class Manager {
         }
     }
     performRedirect() {
-        window.location.href = `${this.redirectUrl}${window.location.search}`;
+        // Merge the current query params into the redirect URL instead of
+        // concatenating. redirectUrl may already carry a query string (e.g. a
+        // router link with edu/pill_id/locale); a naive `${redirectUrl}${search}`
+        // produces a second "?" that swallows our params (notably the tk token).
+        const dest = new URL(this.redirectUrl, window.location.origin);
+        new URLSearchParams(window.location.search).forEach((value, key) => {
+            dest.searchParams.set(key, value);
+        });
+        window.location.href = dest.toString();
     }
     getTutorial() {
         var _a;
